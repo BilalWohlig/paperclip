@@ -125,6 +125,7 @@ export function approvalRoutes(db: Db) {
       id,
       req.body.decidedByUserId ?? "board",
       req.body.decisionNote,
+      { additionalBudgetCents: req.body.additionalBudgetCents },
     );
 
     if (applied) {

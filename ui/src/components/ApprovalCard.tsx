@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { CheckCircle2, XCircle, Clock } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,7 @@ export function ApprovalCard({
   approval,
   requesterAgent,
   onApprove,
+  onApproveWithBudget,
   onReject,
   onOpen,
   detailLink,
@@ -26,6 +28,7 @@ export function ApprovalCard({
   approval: Approval;
   requesterAgent: Agent | null;
   onApprove: () => void;
+  onApproveWithBudget?: (additionalBudgetCents: number) => void;
   onReject: () => void;
   onOpen?: () => void;
   detailLink?: string;
@@ -33,6 +36,13 @@ export function ApprovalCard({
 }) {
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const label = typeLabel[approval.type] ?? approval.type;
+  const [budgetInput, setBudgetInput] = useState("");
+  const budgetCents = (() => {
+    const dollars = parseFloat(budgetInput);
+    return Number.isFinite(dollars) && dollars > 0 ? Math.round(dollars * 100) : 0;
+  })();
+  const isBudgetIncrease = approval.type === "budget_increase";
+  const isActionable = approval.status === "pending" || approval.status === "revision_requested";
 
   return (
     <div className="border border-border rounded-lg p-4 space-y-0">
@@ -66,25 +76,69 @@ export function ApprovalCard({
         </div>
       )}
 
+      {/* Budget input (inline on the card) */}
+      {isBudgetIncrease && isActionable && (
+        <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
+          <label className="text-sm text-muted-foreground whitespace-nowrap">
+            Additional budget
+          </label>
+          <div className="flex items-center gap-1.5">
+            <span className="text-sm text-muted-foreground">$</span>
+            <input
+              type="number"
+              min={0}
+              step="any"
+              value={budgetInput}
+              onChange={(e) => setBudgetInput(e.target.value)}
+              className="w-40 rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+              placeholder="e.g. 25.00"
+            />
+          </div>
+        </div>
+      )}
+
       {/* Actions */}
-      {(approval.status === "pending" || approval.status === "revision_requested") && (
+      {isActionable && (
         <div className="flex gap-2 mt-4 pt-3 border-t border-border">
-          <Button
-            size="sm"
-            className="bg-green-700 hover:bg-green-600 text-white"
-            onClick={onApprove}
-            disabled={isPending}
-          >
-            Approve
-          </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={onReject}
-            disabled={isPending}
-          >
-            Reject
-          </Button>
+          {isBudgetIncrease ? (
+            <>
+              <Button
+                size="sm"
+                className="bg-green-700 hover:bg-green-600 text-white"
+                onClick={() => onApproveWithBudget?.(budgetCents)}
+                disabled={isPending || budgetCents <= 0}
+              >
+                Approve & Increase Budget
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={onReject}
+                disabled={isPending || budgetCents > 0}
+              >
+                Reject
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                size="sm"
+                className="bg-green-700 hover:bg-green-600 text-white"
+                onClick={onApprove}
+                disabled={isPending}
+              >
+                Approve
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={onReject}
+                disabled={isPending}
+              >
+                Reject
+              </Button>
+            </>
+          )}
         </div>
       )}
       <div className="mt-3">

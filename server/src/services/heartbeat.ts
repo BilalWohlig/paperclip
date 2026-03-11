@@ -18,6 +18,7 @@ import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
+import { checkBudgetAndPause } from "./budget-pause.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 import type { AdapterExecutionResult, AdapterInvocationMeta, AdapterSessionCodec } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
@@ -1077,24 +1078,7 @@ export function heartbeatService(db: Db) {
         })
         .where(eq(agents.id, agent.id));
 
-      const updatedAgent = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, agent.id))
-        .then((rows) => rows[0] ?? null);
-
-      if (
-        updatedAgent &&
-        updatedAgent.budgetMonthlyCents > 0 &&
-        updatedAgent.spentMonthlyCents >= updatedAgent.budgetMonthlyCents &&
-        updatedAgent.status !== "paused" &&
-        updatedAgent.status !== "terminated"
-      ) {
-        await db
-          .update(agents)
-          .set({ status: "paused", updatedAt: new Date() })
-          .where(eq(agents.id, updatedAgent.id));
-      }
+      await checkBudgetAndPause(db, agent.id);
     }
   }
 

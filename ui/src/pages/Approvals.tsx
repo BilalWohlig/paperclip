@@ -53,6 +53,19 @@ export function Approvals() {
     },
   });
 
+  const budgetApproveMutation = useMutation({
+    mutationFn: ({ id, additionalBudgetCents }: { id: string; additionalBudgetCents: number }) =>
+      approvalsApi.approve(id, undefined, additionalBudgetCents),
+    onSuccess: (_approval, { id }) => {
+      setActionError(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
+      navigate(`/approvals/${id}?resolved=approved`);
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to approve");
+    },
+  });
+
   const rejectMutation = useMutation({
     mutationFn: (id: string) => approvalsApi.reject(id),
     onSuccess: () => {
@@ -120,9 +133,12 @@ export function Approvals() {
               approval={approval}
               requesterAgent={approval.requestedByAgentId ? (agents ?? []).find((a) => a.id === approval.requestedByAgentId) ?? null : null}
               onApprove={() => approveMutation.mutate(approval.id)}
+              onApproveWithBudget={(cents) =>
+                budgetApproveMutation.mutate({ id: approval.id, additionalBudgetCents: cents })
+              }
               onReject={() => rejectMutation.mutate(approval.id)}
               detailLink={`/approvals/${approval.id}`}
-              isPending={approveMutation.isPending || rejectMutation.isPending}
+              isPending={approveMutation.isPending || budgetApproveMutation.isPending || rejectMutation.isPending}
             />
           ))}
         </div>

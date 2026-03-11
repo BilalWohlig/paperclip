@@ -26,6 +26,8 @@ export function ApprovalDetail() {
   const [commentBody, setCommentBody] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showRawPayload, setShowRawPayload] = useState(false);
+  const [additionalBudgetCents, setAdditionalBudgetCents] = useState(0);
+  const [budgetInputValue, setBudgetInputValue] = useState("");
 
   const { data: approval, isLoading } = useQuery({
     queryKey: queryKeys.approvals.detail(approvalId!),
@@ -85,7 +87,12 @@ export function ApprovalDetail() {
   };
 
   const approveMutation = useMutation({
-    mutationFn: () => approvalsApi.approve(approvalId!),
+    mutationFn: () =>
+      approvalsApi.approve(
+        approvalId!,
+        undefined,
+        approval?.type === "budget_increase" ? additionalBudgetCents : undefined,
+      ),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -182,7 +189,9 @@ export function ApprovalDetail() {
               <div>
                 <p className="text-sm text-green-800 dark:text-green-100 font-medium">Approval confirmed</p>
                 <p className="text-xs text-green-700 dark:text-green-200/90">
-                  Requesting agent was notified to review this approval and linked issues.
+                  {approval.type === "budget_increase"
+                    ? "Agent budget has been increased. The agent is now available for new tasks."
+                    : "Requesting agent was notified to review this approval and linked issues."}
                 </p>
               </div>
             </div>
@@ -219,18 +228,22 @@ export function ApprovalDetail() {
             </div>
           )}
           <ApprovalPayloadRenderer type={approval.type} payload={payload} />
-          <button
-            type="button"
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mt-2"
-            onClick={() => setShowRawPayload((v) => !v)}
-          >
-            <ChevronRight className={`h-3 w-3 transition-transform ${showRawPayload ? "rotate-90" : ""}`} />
-            See full request
-          </button>
-          {showRawPayload && (
-            <pre className="text-xs bg-muted/40 rounded-md p-3 overflow-x-auto">
-              {JSON.stringify(payload, null, 2)}
-            </pre>
+          {approval.type !== "budget_increase" && (
+            <>
+              <button
+                type="button"
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mt-2"
+                onClick={() => setShowRawPayload((v) => !v)}
+              >
+                <ChevronRight className={`h-3 w-3 transition-transform ${showRawPayload ? "rotate-90" : ""}`} />
+                See full request
+              </button>
+              {showRawPayload && (
+                <pre className="text-xs bg-muted/40 rounded-md p-3 overflow-x-auto">
+                  {JSON.stringify(payload, null, 2)}
+                </pre>
+              )}
+            </>
           )}
           {approval.decisionNote && (
             <p className="text-xs text-muted-foreground">Decision note: {approval.decisionNote}</p>
@@ -259,6 +272,31 @@ export function ApprovalDetail() {
             </p>
           </div>
         )}
+        {approval.type === "budget_increase" && isActionable && (
+          <div className="flex items-center gap-3 pt-2 border-t border-border/60">
+            <label className="text-sm text-muted-foreground whitespace-nowrap">
+              Additional budget
+            </label>
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm text-muted-foreground">$</span>
+              <input
+                type="number"
+                min={0}
+                step="any"
+                value={budgetInputValue}
+                onChange={(e) => {
+                  setBudgetInputValue(e.target.value);
+                  const dollars = parseFloat(e.target.value);
+                  setAdditionalBudgetCents(
+                    Number.isFinite(dollars) && dollars > 0 ? Math.round(dollars * 100) : 0,
+                  );
+                }}
+                className="w-40 rounded-md border border-input bg-background px-2 py-1.5 text-sm"
+                placeholder="e.g. 25.00"
+              />
+            </div>
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           {isActionable && (
             <>
@@ -266,21 +304,27 @@ export function ApprovalDetail() {
                 size="sm"
                 className="bg-green-700 hover:bg-green-600 text-white"
                 onClick={() => approveMutation.mutate()}
-                disabled={approveMutation.isPending}
+                disabled={
+                  approveMutation.isPending ||
+                  (approval.type === "budget_increase" && additionalBudgetCents <= 0)
+                }
               >
-                Approve
+                {approval.type === "budget_increase" ? "Approve & Increase Budget" : "Approve"}
               </Button>
               <Button
                 variant="destructive"
                 size="sm"
                 onClick={() => rejectMutation.mutate()}
-                disabled={rejectMutation.isPending}
+                disabled={
+                  rejectMutation.isPending ||
+                  (approval.type === "budget_increase" && additionalBudgetCents > 0)
+                }
               >
                 Reject
               </Button>
             </>
           )}
-          {approval.status === "pending" && (
+          {approval.status === "pending" && approval.type !== "budget_increase" && (
             <Button
               size="sm"
               variant="outline"

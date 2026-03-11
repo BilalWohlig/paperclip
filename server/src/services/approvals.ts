@@ -1,6 +1,6 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvalComments, approvals } from "@paperclipai/db";
+import { agents, approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
 import { notifyHireApproved } from "./hire-hook.js";
@@ -87,7 +87,12 @@ export function approvalService(db: Db) {
         .returning()
         .then((rows) => rows[0]),
 
-    approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
+    approve: async (
+      id: string,
+      decidedByUserId: string,
+      decisionNote?: string | null,
+      opts?: { additionalBudgetCents?: number },
+    ) => {
       const { approval: updated, applied } = await resolveApproval(
         id,
         "approved",
@@ -136,6 +141,33 @@ export function approvalService(db: Db) {
             sourceId: id,
             approvedAt: now,
           }).catch(() => {});
+        }
+      }
+
+      if (applied && updated.type === "budget_increase") {
+        const payload = updated.payload as Record<string, unknown>;
+        const agentId = typeof payload.agentId === "string" ? payload.agentId : null;
+        const additionalCents = opts?.additionalBudgetCents;
+
+        if (agentId && additionalCents && additionalCents > 0) {
+          await db
+            .update(agents)
+            .set({
+              budgetMonthlyCents: sql`${agents.budgetMonthlyCents} + ${additionalCents}`,
+              updatedAt: new Date(),
+            })
+            .where(eq(agents.id, agentId));
+
+          // Store the approved amount in the payload for UI display
+          await db
+            .update(approvals)
+            .set({
+              payload: { ...payload, approvedAdditionalCents: additionalCents },
+            })
+            .where(eq(approvals.id, id));
+
+          // Resume so the wakeup in the route does not throw
+          await agentsSvc.resume(agentId);
         }
       }
 

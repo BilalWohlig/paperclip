@@ -798,6 +798,12 @@ function AgentOverview({
         </ChartCard>
       </div>
 
+      {/* Costs */}
+      <div className="space-y-3">
+        <h3 className="text-sm font-medium">Costs</h3>
+        <CostsSection runtimeState={runtimeState} runs={runs} />
+      </div>
+
       {/* Recent Issues */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
@@ -826,12 +832,6 @@ function AgentOverview({
             )}
           </div>
         )}
-      </div>
-
-      {/* Costs */}
-      <div className="space-y-3">
-        <h3 className="text-sm font-medium">Costs</h3>
-        <CostsSection runtimeState={runtimeState} runs={runs} />
       </div>
     </div>
   );

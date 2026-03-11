@@ -381,6 +381,12 @@ export function agentService(db: Db) {
       if (existing.status === "pending_approval") {
         throw conflict("Pending approval agents cannot be resumed");
       }
+      if (
+        existing.budgetMonthlyCents > 0 &&
+        existing.spentMonthlyCents >= existing.budgetMonthlyCents
+      ) {
+        throw conflict("Cannot resume agent — usage exceeds budget. Increase the budget first.");
+      }
 
       const updated = await db
         .update(agents)
