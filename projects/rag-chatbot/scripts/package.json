@@ -1,0 +1,17 @@
+{
+  "name": "rag-chatbot-scripts",
+  "version": "1.0.0",
+  "description": "Scripts for the RAG Chatbot project",
+  "scripts": {
+    "generate-pdf": "tsx generate-pdf.ts"
+  },
+  "dependencies": {
+    "pdfkit": "^0.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "@types/pdfkit": "^0.13.5",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}

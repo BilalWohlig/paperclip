@@ -1076,6 +1076,25 @@ export function heartbeatService(db: Db) {
           updatedAt: new Date(),
         })
         .where(eq(agents.id, agent.id));
+
+      const updatedAgent = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, agent.id))
+        .then((rows) => rows[0] ?? null);
+
+      if (
+        updatedAgent &&
+        updatedAgent.budgetMonthlyCents > 0 &&
+        updatedAgent.spentMonthlyCents >= updatedAgent.budgetMonthlyCents &&
+        updatedAgent.status !== "paused" &&
+        updatedAgent.status !== "terminated"
+      ) {
+        await db
+          .update(agents)
+          .set({ status: "paused", updatedAt: new Date() })
+          .where(eq(agents.id, updatedAgent.id));
+      }
     }
   }
 
