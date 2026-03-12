@@ -45,7 +45,7 @@ export function ApprovalCard({
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
 
   return (
-    <div className="border border-border rounded-lg p-4 space-y-0">
+    <div className={`rounded-lg p-4 space-y-0 ${isBudgetIncrease ? "border border-red-500/30 bg-gradient-to-br from-red-500/10 via-card to-card" : "border border-border"}`}>
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
