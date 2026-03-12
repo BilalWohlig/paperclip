@@ -596,6 +596,18 @@ export async function startServer(): Promise<StartedServer> {
     server.listen(listenPort, config.host, () => {
       server.off("error", onError);
       logger.info(`Server listening on ${config.host}:${listenPort}`);
+      const useVertex = ["1", "true"].includes((process.env.CLAUDE_CODE_USE_VERTEX ?? "").trim().toLowerCase());
+      const useBedrock = ["1", "true"].includes((process.env.CLAUDE_CODE_USE_BEDROCK ?? "").trim().toLowerCase());
+      if (useVertex) {
+        const project = process.env.ANTHROPIC_VERTEX_PROJECT_ID ?? "(not set)";
+        const region = process.env.CLOUD_ML_REGION ?? "(not set)";
+        logger.info(`LLM provider: Vertex AI (project=${project}, region=${region})`);
+      } else if (useBedrock) {
+        const region = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "(not set)";
+        logger.info(`LLM provider: AWS Bedrock (region=${region})`);
+      } else {
+        logger.info("LLM provider: Anthropic API (direct)");
+      }
       if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
         const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
         const url = `http://${openHost}:${listenPort}`;
