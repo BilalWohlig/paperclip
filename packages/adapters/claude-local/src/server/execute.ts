@@ -79,6 +79,7 @@ interface ClaudeRuntimeConfig {
   workspaceRepoUrl: string | null;
   workspaceRepoRef: string | null;
   env: Record<string, string>;
+  removeEnvKeys: string[];
   timeoutSec: number;
   graceSec: number;
   extraArgs: string[];
@@ -106,6 +107,47 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" {
   // Claude uses API-key auth when ANTHROPIC_API_KEY is present; otherwise rely on local login/session auth.
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+}
+
+export function resolveClaudeProvider(env: Record<string, string>): string {
+  const isTruthy = (key: string) => {
+    const val = (env[key] ?? process.env[key] ?? "").trim().toLowerCase();
+    return val === "1" || val === "true";
+  };
+  if (isTruthy("CLAUDE_CODE_USE_VERTEX")) return "vertex";
+  if (isTruthy("CLAUDE_CODE_USE_BEDROCK")) return "bedrock";
+  return "anthropic";
+}
+
+/** Env keys to delete from the child process when a provider is NOT active. */
+export function computeProviderRemoveKeys(env: Record<string, string>): string[] {
+  const provider = resolveClaudeProvider(env);
+  const keys: string[] = [];
+  if (provider !== "vertex") {
+    keys.push("CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION", "GOOGLE_APPLICATION_CREDENTIALS");
+  }
+  if (provider !== "bedrock") {
+    keys.push("CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_BEDROCK_BASE_URL", "AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY");
+  }
+  return keys;
+}
+
+/**
+ * Translate a model ID for the target provider.
+ * Vertex AI uses `@` before the date snapshot (e.g. `claude-haiku-4-5@20251001`)
+ * while the Anthropic API uses `-` (e.g. `claude-haiku-4-5-20251001`).
+ */
+export function resolveModelForProvider(model: string, provider: string): string {
+  if (!model) return model;
+  if (provider === "vertex") {
+    return model.replace(/-(\d{8})$/, "@$1");
+  }
+  if (provider === "bedrock") {
+    if (!model.startsWith("anthropic.")) {
+      return `anthropic.${model}`;
+    }
+  }
+  return model;
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
@@ -236,6 +278,10 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env.PAPERCLIP_API_KEY = authToken;
   }
 
+  // Compute env keys to fully remove from the child process so Claude Code CLI
+  // doesn't auto-detect an unwanted provider (Vertex/Bedrock vars leak via process.env).
+  const removeEnvKeys = computeProviderRemoveKeys(env);
+
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   await ensureCommandResolvable(command, cwd, runtimeEnv);
 
@@ -254,6 +300,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     workspaceRepoUrl,
     workspaceRepoRef,
     env,
+    removeEnvKeys,
     timeoutSec,
     graceSec,
     extraArgs,
@@ -280,6 +327,7 @@ export async function runClaudeLogin(input: {
   const proc = await runChildProcess(input.runId, runtime.command, ["login"], {
     cwd: runtime.cwd,
     env: runtime.env,
+    removeEnvKeys: runtime.removeEnvKeys,
     timeoutSec: runtime.timeoutSec,
     graceSec: runtime.graceSec,
     onLog,
@@ -304,7 +352,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   );
-  const model = asString(config.model, "");
+  const rawModel = asString(config.model, "");
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
@@ -331,10 +379,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     workspaceRepoUrl,
     workspaceRepoRef,
     env,
+    removeEnvKeys,
     timeoutSec,
     graceSec,
     extraArgs,
   } = runtimeConfig;
+  const provider = resolveClaudeProvider(env);
+  const model = resolveModelForProvider(rawModel, provider);
   const billingType = resolveClaudeBillingType(env);
   const skillsDir = await buildSkillsDir();
 
@@ -423,6 +474,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const proc = await runChildProcess(runId, command, args, {
       cwd,
       env,
+      removeEnvKeys,
       stdin: prompt,
       timeoutSec,
       graceSec,
@@ -522,7 +574,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
-      provider: "anthropic",
+      provider,
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
       costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),

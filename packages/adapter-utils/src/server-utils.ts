@@ -262,6 +262,7 @@ export async function runChildProcess(
   opts: {
     cwd: string;
     env: Record<string, string>;
+    removeEnvKeys?: string[];
     timeoutSec: number;
     graceSec: number;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
@@ -286,6 +287,12 @@ export async function runChildProcess(
       "CLAUDE_CODE_PARENT_SESSION",
     ] as const;
     for (const key of CLAUDE_CODE_NESTING_VARS) {
+      delete rawMerged[key];
+    }
+
+    // Remove adapter-specified env keys (e.g. Vertex/Bedrock vars when those
+    // providers are not enabled) so they don't leak from process.env.
+    for (const key of opts.removeEnvKeys ?? []) {
       delete rawMerged[key];
     }
 
