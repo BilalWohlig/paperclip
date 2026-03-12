@@ -1576,6 +1576,8 @@ export function heartbeatService(db: Db) {
               ...(adapterResult.usage ?? {}),
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
               ...(adapterResult.billingType ? { billingType: adapterResult.billingType } : {}),
+              ...(adapterResult.provider ? { provider: adapterResult.provider } : {}),
+              ...(adapterResult.model ? { model: adapterResult.model } : {}),
             } as Record<string, unknown>)
           : null;
 

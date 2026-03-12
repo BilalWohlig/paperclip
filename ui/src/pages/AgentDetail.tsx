@@ -205,12 +205,16 @@ function runMetrics(run: HeartbeatRun) {
   const cost =
     usageNumber(usage, "costUsd", "cost_usd", "total_cost_usd") ||
     usageNumber(result, "total_cost_usd", "cost_usd", "costUsd");
+  const provider = typeof usage?.provider === "string" ? usage.provider : null;
+  const model = typeof usage?.model === "string" ? usage.model : null;
   return {
     input,
     output,
     cached,
     cost,
     totalTokens: input + output,
+    provider,
+    model,
   };
 }
 
@@ -1264,7 +1268,6 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
   });
   const run = hydratedRun ?? initialRun;
   const metrics = runMetrics(run);
-  const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
 
   useEffect(() => {
@@ -1349,24 +1352,6 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
     queryKey: queryKeys.runIssues(run.id),
     queryFn: () => activityApi.issuesForRun(run.id),
   });
-  const touchedIssueIds = useMemo(
-    () => Array.from(new Set((touchedIssues ?? []).map((issue) => issue.issueId))),
-    [touchedIssues],
-  );
-
-  const clearSessionsForTouchedIssues = useMutation({
-    mutationFn: async () => {
-      if (touchedIssueIds.length === 0) return 0;
-      await Promise.all(touchedIssueIds.map((issueId) => agentsApi.resetSession(run.agentId, issueId, run.companyId)));
-      return touchedIssueIds.length;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(run.agentId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.taskSessions(run.agentId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.runIssues(run.id) });
-    },
-  });
-
   const runClaudeLogin = useMutation({
     mutationFn: () => agentsApi.loginWithClaude(run.agentId, run.companyId),
     onSuccess: (data) => {
@@ -1398,9 +1383,6 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
     : null;
   const displayDurationSec = durationSec ?? (isRunning ? elapsedSec : null);
   const hasMetrics = metrics.input > 0 || metrics.output > 0 || metrics.cached > 0 || metrics.cost > 0;
-  const hasSession = !!(run.sessionIdBefore || run.sessionIdAfter);
-  const sessionChanged = run.sessionIdBefore && run.sessionIdAfter && run.sessionIdBefore !== run.sessionIdAfter;
-  const sessionId = run.sessionIdAfter || run.sessionIdBefore;
   const hasNonZeroExit = run.exitCode !== null && run.exitCode !== 0;
 
   return (
@@ -1560,60 +1542,14 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType }: { run: Heartb
           )}
         </div>
 
-        {/* Collapsible session row */}
-        {hasSession && (
-          <div className="border-t border-border">
-            <button
-              className="flex items-center gap-1.5 w-full px-4 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
-              onClick={() => setSessionOpen((v) => !v)}
-            >
-              <ChevronRight className={cn("h-3 w-3 transition-transform", sessionOpen && "rotate-90")} />
-              Session
-              {sessionChanged && <span className="text-yellow-400 ml-1">(changed)</span>}
-            </button>
-            {sessionOpen && (
-              <div className="px-4 pb-3 space-y-1 text-xs">
-                {run.sessionIdBefore && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground w-12">{sessionChanged ? "Before" : "ID"}</span>
-                    <CopyText text={run.sessionIdBefore} className="font-mono" />
-                  </div>
-                )}
-                {sessionChanged && run.sessionIdAfter && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground w-12">After</span>
-                    <CopyText text={run.sessionIdAfter} className="font-mono" />
-                  </div>
-                )}
-                {touchedIssueIds.length > 0 && (
-                  <div className="pt-1">
-                    <button
-                      type="button"
-                      className="text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-60"
-                      disabled={clearSessionsForTouchedIssues.isPending}
-                      onClick={() => {
-                        const issueCount = touchedIssueIds.length;
-                        const confirmed = window.confirm(
-                          `Clear session for ${issueCount} issue${issueCount === 1 ? "" : "s"} touched by this run?`,
-                        );
-                        if (!confirmed) return;
-                        clearSessionsForTouchedIssues.mutate();
-                      }}
-                    >
-                      {clearSessionsForTouchedIssues.isPending
-                        ? "clearing session..."
-                        : "clear session for these issues"}
-                    </button>
-                    {clearSessionsForTouchedIssues.isError && (
-                      <p className="text-[11px] text-destructive mt-1">
-                        {clearSessionsForTouchedIssues.error instanceof Error
-                          ? clearSessionsForTouchedIssues.error.message
-                          : "Failed to clear sessions"}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
+        {/* Provider / Model row */}
+        {(metrics.provider || metrics.model) && (
+          <div className="border-t border-border px-4 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            {metrics.provider && (
+              <span>Provider: <span className="font-medium text-foreground">{metrics.provider}</span></span>
+            )}
+            {metrics.model && (
+              <span>Model: <span className="font-medium text-foreground font-mono">{metrics.model}</span></span>
             )}
           </div>
         )}
