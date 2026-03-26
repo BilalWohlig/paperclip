@@ -66,6 +66,13 @@ export const updateAgentInstructionsPathSchema = z.object({
 
 export type UpdateAgentInstructionsPath = z.infer<typeof updateAgentInstructionsPathSchema>;
 
+export const scaffoldAgentInstructionsSchema = z.object({
+  relativePath: z.string().trim().min(1),
+  content: z.string().min(1),
+});
+
+export type ScaffoldAgentInstructions = z.infer<typeof scaffoldAgentInstructionsSchema>;
+
 export const createAgentKeySchema = z.object({
   name: z.string().min(1).default("default"),
 });

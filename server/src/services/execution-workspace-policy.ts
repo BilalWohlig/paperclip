@@ -1,4 +1,5 @@
 import type {
+  BranchPolicy,
   ExecutionWorkspaceMode,
   ExecutionWorkspaceStrategy,
   IssueExecutionWorkspaceSettings,
@@ -11,6 +12,36 @@ type ParsedExecutionWorkspaceMode = Exclude<ExecutionWorkspaceMode, "inherit">;
 function cloneRecord(value: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
   if (!value) return null;
   return { ...value };
+}
+
+function parseBranchPolicy(raw: unknown): BranchPolicy | null {
+  const parsed = parseObject(raw);
+  if (Object.keys(parsed).length === 0) return null;
+  const result: BranchPolicy = {};
+  if (typeof parsed.integrationBranchEnabled === "boolean") {
+    result.integrationBranchEnabled = parsed.integrationBranchEnabled;
+  }
+  if (typeof parsed.integrationBranchTemplate === "string") {
+    result.integrationBranchTemplate = parsed.integrationBranchTemplate;
+  }
+  if (typeof parsed.integrationBranchRef === "string") {
+    result.integrationBranchRef = parsed.integrationBranchRef;
+  }
+  if (typeof parsed.integrationBranchCreatedAt === "string") {
+    result.integrationBranchCreatedAt = parsed.integrationBranchCreatedAt;
+  }
+  if (typeof parsed.integrationBranchCreatedBy === "string") {
+    result.integrationBranchCreatedBy = parsed.integrationBranchCreatedBy;
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+export function resolveEffectiveBaseRef(input: {
+  projectPolicy: ProjectExecutionWorkspacePolicy | null;
+}): string | null {
+  const branchPolicy = input.projectPolicy?.branchPolicy;
+  if (!branchPolicy?.integrationBranchEnabled) return null;
+  return branchPolicy.integrationBranchRef ?? null;
 }
 
 function parseExecutionWorkspaceStrategy(raw: unknown): ExecutionWorkspaceStrategy | null {
@@ -46,8 +77,8 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
       : {}),
-    ...(parsed.branchPolicy && typeof parsed.branchPolicy === "object" && !Array.isArray(parsed.branchPolicy)
-      ? { branchPolicy: { ...(parsed.branchPolicy as Record<string, unknown>) } }
+    ...(parseBranchPolicy(parsed.branchPolicy)
+      ? { branchPolicy: parseBranchPolicy(parsed.branchPolicy) }
       : {}),
     ...(parsed.pullRequestPolicy && typeof parsed.pullRequestPolicy === "object" && !Array.isArray(parsed.pullRequestPolicy)
       ? { pullRequestPolicy: { ...(parsed.pullRequestPolicy as Record<string, unknown>) } }

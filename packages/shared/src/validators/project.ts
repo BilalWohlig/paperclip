@@ -19,7 +19,17 @@ export const projectExecutionWorkspacePolicySchema = z
     allowIssueOverride: z.boolean().optional(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.unknown()).optional().nullable(),
-    branchPolicy: z.record(z.unknown()).optional().nullable(),
+    branchPolicy: z
+      .object({
+        integrationBranchEnabled: z.boolean().optional(),
+        integrationBranchTemplate: z.string().optional().nullable(),
+        integrationBranchRef: z.string().optional().nullable(),
+        integrationBranchCreatedAt: z.string().optional().nullable(),
+        integrationBranchCreatedBy: z.string().uuid().optional().nullable(),
+      })
+      .strict()
+      .optional()
+      .nullable(),
     pullRequestPolicy: z.record(z.unknown()).optional().nullable(),
     cleanupPolicy: z.record(z.unknown()).optional().nullable(),
   })
@@ -30,6 +40,7 @@ const projectWorkspaceFields = {
   cwd: z.string().min(1).optional().nullable(),
   repoUrl: z.string().url().optional().nullable(),
   repoRef: z.string().optional().nullable(),
+  env: z.record(z.unknown()).optional().nullable(),
   metadata: z.record(z.unknown()).optional().nullable(),
 };
 

@@ -208,7 +208,7 @@ function resolveConfiguredPath(value: string, baseDir: string): string {
   return path.resolve(baseDir, value);
 }
 
-async function runGit(args: string[], cwd: string): Promise<string> {
+export async function runGit(args: string[], cwd: string): Promise<string> {
   const proc = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
     const child = spawn("git", args, {
       cwd,
@@ -234,6 +234,41 @@ async function runGit(args: string[], cwd: string): Promise<string> {
 
 async function directoryExists(value: string) {
   return fs.stat(value).then((stats) => stats.isDirectory()).catch(() => false);
+}
+
+export function renderIntegrationBranchName(
+  template: string,
+  input: { repoRef: string | null; projectId: string | null },
+): string {
+  const rendered = renderTemplate(template, {
+    workspace: { repoRef: input.repoRef ?? "" },
+    project: { id: input.projectId ?? "" },
+  });
+  return sanitizeBranchName(rendered);
+}
+
+export async function ensureIntegrationBranch(input: {
+  repoRoot: string;
+  repoRef: string;
+  integrationBranchName: string;
+}): Promise<{ created: boolean; branchName: string }> {
+  const exists = await runGit(
+    ["rev-parse", "--verify", input.integrationBranchName],
+    input.repoRoot,
+  )
+    .then(() => true)
+    .catch(() => false);
+
+  if (exists) {
+    return { created: false, branchName: input.integrationBranchName };
+  }
+
+  await runGit(
+    ["branch", input.integrationBranchName, input.repoRef],
+    input.repoRoot,
+  );
+
+  return { created: true, branchName: input.integrationBranchName };
 }
 
 function buildWorkspaceCommandEnv(input: {

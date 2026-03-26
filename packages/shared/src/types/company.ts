@@ -3,6 +3,7 @@ import type { CompanyStatus } from "../constants.js";
 export interface Company {
   id: string;
   name: string;
+  slug: string | null;
   description: string | null;
   status: CompanyStatus;
   issuePrefix: string;

@@ -535,6 +535,13 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "periodic reap of orphaned heartbeat runs failed");
         });
+
+      // Auto-recover agents stuck in error state for >1 minute
+      void heartbeat
+        .autoRecoverErrorAgents()
+        .catch((err) => {
+          logger.error({ err }, "auto-recover error agents failed");
+        });
     }, config.heartbeatSchedulerIntervalMs);
   }
   

@@ -14,6 +14,7 @@ export interface ProjectWorkspace {
   cwd: string | null;
   repoUrl: string | null;
   repoRef: string | null;
+  env: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
   isPrimary: boolean;
   runtimeServices?: WorkspaceRuntimeService[];
@@ -35,6 +36,8 @@ export interface Project {
   leadAgentId: string | null;
   targetDate: string | null;
   color: string | null;
+  issuePrefix: string | null;
+  issueCounter: number;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;

@@ -21,6 +21,7 @@ export const projectWorkspaces = pgTable(
     repoUrl: text("repo_url"),
     repoRef: text("repo_ref"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    env: jsonb("env").$type<Record<string, unknown>>(),
     isPrimary: boolean("is_primary").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

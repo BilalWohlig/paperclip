@@ -27,7 +27,7 @@ const PROJECT_STATUSES = [
 ];
 
 // TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
-const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
+const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = true;
 
 interface ProjectPropertiesProps {
   project: Project;
@@ -48,7 +48,9 @@ export type ProjectConfigFieldKey =
   | "execution_workspace_branch_template"
   | "execution_workspace_worktree_parent_dir"
   | "execution_workspace_provision_command"
-  | "execution_workspace_teardown_command";
+  | "execution_workspace_teardown_command"
+  | "branch_policy_integration_enabled"
+  | "branch_policy_integration_template";
 
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 
@@ -152,6 +154,99 @@ function ProjectStatusPicker({ status, onChange }: { status: string; onChange: (
   );
 }
 
+function WorkspaceEnvEditor({
+  workspace,
+  onUpdate,
+}: {
+  workspace: Project["workspaces"][number];
+  onUpdate: (data: Record<string, unknown>) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [newKey, setNewKey] = useState("");
+  const [newValue, setNewValue] = useState("");
+
+  const envEntries = Object.entries(workspace.env ?? {});
+
+  const addEnvVar = () => {
+    const key = newKey.trim();
+    if (!key) return;
+    const updated = { ...(workspace.env ?? {}), [key]: newValue };
+    onUpdate({ env: updated });
+    setNewKey("");
+    setNewValue("");
+  };
+
+  const removeEnvVar = (key: string) => {
+    const updated = { ...(workspace.env ?? {}) };
+    delete updated[key];
+    onUpdate({ env: Object.keys(updated).length > 0 ? updated : null });
+  };
+
+  return (
+    <div className="pl-2">
+      <button
+        type="button"
+        className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span className="text-[10px]">{expanded ? "\u25BC" : "\u25B6"}</span>
+        <span>Environment ({envEntries.length})</span>
+      </button>
+      {expanded && (
+        <div className="mt-1 space-y-1">
+          {envEntries.map(([key, binding]) => (
+            <div key={key} className="flex items-center gap-1.5 text-xs">
+              <code className="font-mono text-[11px]">{key}</code>
+              <span className="text-muted-foreground">=</span>
+              <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+                {typeof binding === "object" && binding !== null && (binding as Record<string, unknown>).type === "secret_ref"
+                  ? "***secret***"
+                  : String(binding ?? "")}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="ml-auto h-4 w-4 shrink-0"
+                onClick={() => removeEnvVar(key)}
+                aria-label={`Remove ${key}`}
+              >
+                <X className="h-2.5 w-2.5" />
+              </Button>
+            </div>
+          ))}
+          <div className="flex items-center gap-1">
+            <input
+              className="w-24 rounded border border-border bg-transparent px-1.5 py-0.5 font-mono text-[11px] outline-none placeholder:text-muted-foreground/50"
+              value={newKey}
+              onChange={(e) => setNewKey(e.target.value)}
+              placeholder="KEY"
+              onKeyDown={(e) => e.key === "Enter" && addEnvVar()}
+            />
+            <span className="text-[11px] text-muted-foreground">=</span>
+            <input
+              className="flex-1 rounded border border-border bg-transparent px-1.5 py-0.5 font-mono text-[11px] outline-none placeholder:text-muted-foreground/50"
+              value={newValue}
+              onChange={(e) => setNewValue(e.target.value)}
+              placeholder="value"
+              onKeyDown={(e) => e.key === "Enter" && addEnvVar()}
+            />
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="h-5 w-5 shrink-0"
+              onClick={addEnvVar}
+              disabled={!newKey.trim()}
+              aria-label="Add env var"
+            >
+              <Plus className="h-3 w-3" />
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSaveState }: ProjectPropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
@@ -202,6 +297,10 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     branchTemplate: "",
     worktreeParentDir: "",
   };
+  const branchPolicy = (executionWorkspacePolicy as Record<string, unknown> | null)?.branchPolicy as Record<string, unknown> | null | undefined;
+  const integrationBranchEnabled = (branchPolicy?.integrationBranchEnabled as boolean) === true;
+  const integrationBranchTemplate = (branchPolicy?.integrationBranchTemplate as string) ?? "";
+  const integrationBranchRef = (branchPolicy?.integrationBranchRef as string) ?? null;
 
   const invalidateProject = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.id) });
@@ -253,6 +352,15 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
         ...patch,
       },
     };
+  };
+
+  const updateBranchPolicy = (patch: Record<string, unknown>) => {
+    return updateExecutionWorkspacePolicy({
+      branchPolicy: {
+        ...branchPolicy,
+        ...patch,
+      },
+    });
   };
 
   const isAbsolutePath = (value: string) => value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
@@ -599,6 +707,12 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                       ))}
                     </div>
                   ) : null}
+                  <WorkspaceEnvEditor
+                    workspace={workspace}
+                    onUpdate={(data) =>
+                      updateWorkspace.mutate({ workspaceId: workspace.id, data })
+                    }
+                  />
                 </div>
               ))}
             </div>
@@ -946,6 +1060,71 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                     </p>
                   </div>
                 )}
+
+                {/* Integration branch settings */}
+                <div className="mt-3 space-y-2 border-t border-border pt-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2 text-sm">
+                        <span>Integration branch</span>
+                        <SaveIndicator state={fieldState("branch_policy_integration_enabled")} />
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        Create a shared integration branch for all team worktrees.
+                      </div>
+                    </div>
+                    <button
+                      className={cn(
+                        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors",
+                        integrationBranchEnabled ? "bg-green-600" : "bg-muted",
+                      )}
+                      type="button"
+                      onClick={() =>
+                        commitField(
+                          "branch_policy_integration_enabled",
+                          updateBranchPolicy({ integrationBranchEnabled: !integrationBranchEnabled })!,
+                        )
+                      }
+                    >
+                      <span
+                        className={cn(
+                          "inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform",
+                          integrationBranchEnabled ? "translate-x-4.5" : "translate-x-0.5",
+                        )}
+                      />
+                    </button>
+                  </div>
+
+                  {integrationBranchEnabled && (
+                    <div className="space-y-2">
+                      <div>
+                        <div className="mb-1 flex items-center gap-1.5">
+                          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <span>Branch name template</span>
+                            <SaveIndicator state={fieldState("branch_policy_integration_template")} />
+                          </label>
+                        </div>
+                        <DraftInput
+                          value={integrationBranchTemplate}
+                          onCommit={(value) =>
+                            commitField(
+                              "branch_policy_integration_template",
+                              updateBranchPolicy({ integrationBranchTemplate: value || null })!,
+                            )
+                          }
+                          immediate
+                          className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                          placeholder="{{workspace.repoRef}}-integration"
+                        />
+                      </div>
+                      {integrationBranchRef && (
+                        <p className="text-[11px] text-muted-foreground">
+                          Active integration branch: <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">{integrationBranchRef}</code>
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </div>

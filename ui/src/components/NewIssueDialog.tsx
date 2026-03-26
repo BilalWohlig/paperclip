@@ -46,7 +46,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
 // TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
-const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
+const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = true;
 
 /** Return black or white hex based on background luminance (WCAG perceptual weights). */
 function getContrastTextColor(hexColor: string): string {
@@ -220,7 +220,7 @@ export function NewIssueDialog() {
     userId: currentUserId,
   });
 
-  const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === assigneeId)?.adapterType ?? null;
+  const assigneeAdapterType = (agents ?? []).find((agent) => agent?.id === assigneeId)?.adapterType ?? null;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );

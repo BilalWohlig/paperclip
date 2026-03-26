@@ -649,20 +649,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const attachments = await svc.listAttachments(id);
 
     const issue = await svc.remove(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
-    }
-
-    for (const attachment of attachments) {
-      try {
-        await storage.deleteObject(attachment.companyId, attachment.objectKey);
-      } catch (err) {
-        logger.warn({ err, issueId: id, attachmentId: attachment.id }, "failed to delete attachment object during issue delete");
-      }
     }
 
     const actor = getActorInfo(req);
@@ -678,6 +669,27 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     res.json(issue);
+  });
+
+  router.delete("/companies/:companyId/issues", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const result = await svc.removeAllByCompany(companyId);
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issues.bulk_deleted",
+      entityType: "company",
+      entityId: companyId,
+    });
+
+    res.json(result);
   });
 
   router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {

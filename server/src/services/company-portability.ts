@@ -615,7 +615,8 @@ export function companyPortabilityService(db: Db) {
         const slug = idToSlug.get(agent.id)!;
         const instructions = await readAgentInstructions(agent);
         if (instructions.warning) warnings.push(instructions.warning);
-        const agentPath = `agents/${slug}/AGENTS.md`;
+        const companySlug = company.slug ?? toSafeSlug(company.name, "company");
+        const agentPath = `agents/${companySlug}/${slug}/AGENTS.md`;
 
         const secretStart = requiredSecrets.length;
         const adapterDefaultRules = ADAPTER_DEFAULT_RULES_BY_TYPE[agent.adapterType] ?? [];

@@ -59,7 +59,7 @@ export function saveLastInboxTab(tab: InboxTab) {
 }
 
 export function getLatestFailedRunsByAgent(runs: HeartbeatRun[]): HeartbeatRun[] {
-  const sorted = [...runs].sort(
+  const sorted = [...runs].filter(Boolean).sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   );
   const latestByAgent = new Map<string, HeartbeatRun>();

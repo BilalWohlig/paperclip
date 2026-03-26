@@ -1,6 +1,18 @@
 import type { CompanySecret, SecretProviderDescriptor, SecretProvider } from "@paperclipai/shared";
 import { api } from "./client";
 
+export type GitHubTokenStatus = { exists: true; secretId: string } | { exists: false };
+export type GitHubRepoValidation =
+  | { accessible: true }
+  | { accessible: false; reason: string; status?: number };
+
+export const githubTokenApi = {
+  status: (companyId: string) =>
+    api.get<GitHubTokenStatus>(`/companies/${companyId}/github-token`),
+  validateRepo: (companyId: string, repoUrl: string) =>
+    api.post<GitHubRepoValidation>(`/companies/${companyId}/github-token/validate-repo`, { repoUrl }),
+};
+
 export const secretsApi = {
   list: (companyId: string) => api.get<CompanySecret[]>(`/companies/${companyId}/secrets`),
   providers: (companyId: string) =>

@@ -1,10 +1,12 @@
 import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const companies = pgTable(
   "companies",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     name: text("name").notNull(),
+    slug: text("slug"),
     description: text("description"),
     status: text("status").notNull().default("active"),
     issuePrefix: text("issue_prefix").notNull().default("PAP"),
@@ -20,5 +22,6 @@ export const companies = pgTable(
   },
   (table) => ({
     issuePrefixUniqueIdx: uniqueIndex("companies_issue_prefix_idx").on(table.issuePrefix),
+    slugActiveIdx: uniqueIndex("companies_slug_active_idx").on(table.slug).where(sql`${table.status} != 'archived'`),
   }),
 );

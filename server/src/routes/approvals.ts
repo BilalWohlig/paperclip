@@ -260,6 +260,28 @@ export function approvalRoutes(db: Db) {
         details: { type: approval.type },
       });
 
+      // Auto-wake the agent who submitted the approval
+      if (approval.requestedByAgentId) {
+        heartbeat
+          .wakeup(approval.requestedByAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "approval_revision_requested",
+            payload: { approvalId: approval.id },
+            requestedByActorType: "user",
+            requestedByActorId: req.actor.userId ?? "board",
+            contextSnapshot: {
+              approvalId: approval.id,
+              approvalStatus: "revision_requested",
+              wakeReason: "approval_revision_requested",
+              source: "approval.revision",
+            },
+          })
+          .catch((err) =>
+            logger.warn({ err, approvalId: approval.id, agentId: approval.requestedByAgentId }, "failed to wake agent on approval revision"),
+          );
+      }
+
       res.json(redactApprovalPayload(approval));
     },
   );

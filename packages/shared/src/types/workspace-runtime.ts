@@ -11,13 +11,23 @@ export interface ExecutionWorkspaceStrategy {
   teardownCommand?: string | null;
 }
 
+export interface BranchPolicy {
+  integrationBranchEnabled?: boolean;
+  /** Template for integration branch name. Default: "{{workspace.repoRef}}-integration" */
+  integrationBranchTemplate?: string | null;
+  /** Resolved branch name, written back after creation */
+  integrationBranchRef?: string | null;
+  integrationBranchCreatedAt?: string | null;
+  integrationBranchCreatedBy?: string | null;
+}
+
 export interface ProjectExecutionWorkspacePolicy {
   enabled: boolean;
   defaultMode?: "project_primary" | "isolated";
   allowIssueOverride?: boolean;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
-  branchPolicy?: Record<string, unknown> | null;
+  branchPolicy?: BranchPolicy | null;
   pullRequestPolicy?: Record<string, unknown> | null;
   cleanupPolicy?: Record<string, unknown> | null;
 }

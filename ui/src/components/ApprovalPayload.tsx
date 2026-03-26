@@ -1,4 +1,5 @@
 import { UserPlus, Lightbulb, ShieldCheck, DollarSign } from "lucide-react";
+import { MarkdownBody } from "./MarkdownBody";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
@@ -58,8 +59,8 @@ export function CeoStrategyPayload({ payload }: { payload: Record<string, unknow
     <div className="mt-3 space-y-1.5 text-sm">
       <PayloadField label="Title" value={payload.title} />
       {!!plan && (
-        <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap font-mono text-xs max-h-48 overflow-y-auto">
-          {String(plan)}
+        <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 max-h-64 overflow-y-auto">
+          <MarkdownBody className="text-xs text-muted-foreground">{String(plan)}</MarkdownBody>
         </div>
       )}
       {!plan && (

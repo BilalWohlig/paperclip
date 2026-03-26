@@ -605,7 +605,7 @@ export function issueService(db: Db) {
       const row = await db
         .select()
         .from(issues)
-        .where(eq(issues.id, id))
+        .where(and(eq(issues.id, id), isNull(issues.hiddenAt)))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
       const [enriched] = await withIssueLabels(db, [row]);
@@ -616,7 +616,7 @@ export function issueService(db: Db) {
       const row = await db
         .select()
         .from(issues)
-        .where(eq(issues.identifier, identifier.toUpperCase()))
+        .where(and(eq(issues.identifier, identifier.toUpperCase()), isNull(issues.hiddenAt)))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
       const [enriched] = await withIssueLabels(db, [row]);
@@ -654,14 +654,28 @@ export function issueService(db: Db) {
               parseProjectExecutionWorkspacePolicy(project?.executionWorkspacePolicy),
             ) as Record<string, unknown> | null;
         }
-        const [company] = await tx
-          .update(companies)
-          .set({ issueCounter: sql`${companies.issueCounter} + 1` })
-          .where(eq(companies.id, companyId))
-          .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+        let issueNumber: number;
+        let identifier: string;
 
-        const issueNumber = company.issueCounter;
-        const identifier = `${company.issuePrefix}-${issueNumber}`;
+        if (issueData.projectId) {
+          // Project-scoped identifier: use project prefix + counter
+          const [project] = await tx
+            .update(projects)
+            .set({ issueCounter: sql`${projects.issueCounter} + 1` })
+            .where(eq(projects.id, issueData.projectId))
+            .returning({ issueCounter: projects.issueCounter, issuePrefix: projects.issuePrefix });
+          issueNumber = project.issueCounter;
+          identifier = `${project.issuePrefix}-${issueNumber}`;
+        } else {
+          // Company-scoped identifier: use company prefix + counter
+          const [company] = await tx
+            .update(companies)
+            .set({ issueCounter: sql`${companies.issueCounter} + 1` })
+            .where(eq(companies.id, companyId))
+            .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+          issueNumber = company.issueCounter;
+          identifier = `${company.issuePrefix}-${issueNumber}`;
+        }
 
         const values = {
           ...issueData,
@@ -759,29 +773,105 @@ export function issueService(db: Db) {
       });
     },
 
-    remove: (id: string) =>
-      db.transaction(async (tx) => {
-        const attachmentAssetIds = await tx
-          .select({ assetId: issueAttachments.assetId })
-          .from(issueAttachments)
-          .where(eq(issueAttachments.issueId, id));
+    remove: async (id: string) => {
+      const now = new Date();
+      const row = await db
+        .update(issues)
+        .set({
+          hiddenAt: now,
+          updatedAt: now,
+          assigneeAgentId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+        })
+        .where(and(eq(issues.id, id), isNull(issues.hiddenAt)))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
 
-        const removedIssue = await tx
-          .delete(issues)
-          .where(eq(issues.id, id))
-          .returning()
-          .then((rows) => rows[0] ?? null);
+      // Cancel any queued/running heartbeat runs for this issue
+      const activeRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, row.companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${row.id}`,
+          ),
+        );
+      for (const run of activeRuns) {
+        await db
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            error: "Issue deleted",
+            errorCode: "issue_deleted",
+            finishedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), inArray(heartbeatRuns.status, ["queued", "running"])));
+      }
 
-        if (removedIssue && attachmentAssetIds.length > 0) {
-          await tx
-            .delete(assets)
-            .where(inArray(assets.id, attachmentAssetIds.map((row) => row.assetId)));
-        }
+      const [enriched] = await withIssueLabels(db, [row]);
+      return enriched;
+    },
 
-        if (!removedIssue) return null;
-        const [enriched] = await withIssueLabels(tx, [removedIssue]);
-        return enriched;
-      }),
+    removeAllByCompany: async (companyId: string) => {
+      const now = new Date();
+
+      // Find all non-hidden issues for this company
+      const targetIds = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt)))
+        .then((rows) => rows.map((r) => r.id));
+
+      if (targetIds.length === 0) return { deleted: 0 };
+
+      // Soft-delete all: set hiddenAt, unassign agents, clear execution locks
+      await db
+        .update(issues)
+        .set({
+          hiddenAt: now,
+          updatedAt: now,
+          assigneeAgentId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+        })
+        .where(and(eq(issues.companyId, companyId), isNull(issues.hiddenAt)));
+
+      // Cancel any queued/running heartbeat runs for these issues
+      const activeRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' IN (${sql.join(
+              targetIds.map((id) => sql`${id}`),
+              sql`, `,
+            )})`,
+          ),
+        );
+      for (const run of activeRuns) {
+        await db
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            error: "Issue deleted",
+            errorCode: "issue_deleted",
+            finishedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), inArray(heartbeatRuns.status, ["queued", "running"])));
+      }
+
+      return { deleted: targetIds.length };
+    },
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db

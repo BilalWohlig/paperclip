@@ -1,8 +1,11 @@
 import { Router, type Request } from "express";
+import { logger } from "../middleware/logger.js";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns } from "@paperclipai/db";
+import { agents as agentsTable, companies, heartbeatRuns, projects, projectWorkspaces } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   createAgentKeySchema,
@@ -13,6 +16,7 @@ import {
   testAdapterEnvironmentSchema,
   updateAgentPermissionsSchema,
   updateAgentInstructionsPathSchema,
+  scaffoldAgentInstructionsSchema,
   wakeAgentSchema,
   updateAgentSchema,
 } from "@paperclipai/shared";
@@ -31,6 +35,7 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { findServerAdapter, listAdapterModels } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
+import { runGit } from "../services/workspace-runtime.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
@@ -860,6 +865,62 @@ export function agentRoutes(db: Db) {
     res.json(agent);
   });
 
+  router.post("/agents/:id/scaffold-instructions", validate(scaffoldAgentInstructionsSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    await assertCanManageInstructionsPath(req, existing);
+
+    const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
+    const defaultKey = DEFAULT_INSTRUCTIONS_PATH_KEYS[existing.adapterType] ?? null;
+    if (!defaultKey) {
+      res.status(422).json({
+        error: `No default instructions path key for adapter type '${existing.adapterType}'.`,
+      });
+      return;
+    }
+
+    const absPath = resolveInstructionsFilePath(req.body.relativePath, existingAdapterConfig);
+
+    // Create directory and write file
+    await fs.mkdir(path.dirname(absPath), { recursive: true });
+    await fs.writeFile(absPath, req.body.content, "utf8");
+
+    // Set instructionsFilePath on the agent
+    const nextAdapterConfig: Record<string, unknown> = { ...existingAdapterConfig, [defaultKey]: absPath };
+    const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+      existing.companyId,
+      nextAdapterConfig,
+      { strictMode: strictSecretsMode },
+    );
+    const actor = getActorInfo(req);
+    await svc.update(id, { adapterConfig: normalizedAdapterConfig }, {
+      recordRevision: {
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        source: "scaffold_instructions",
+      },
+    });
+
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.instructions_scaffolded",
+      entityType: "agent",
+      entityId: existing.id,
+      details: { path: absPath },
+    });
+
+    res.json({ agentId: existing.id, path: absPath, created: true });
+  });
+
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
@@ -1280,14 +1341,150 @@ export function agentRoutes(db: Db) {
     res.json(result);
   });
 
+  router.post("/agents/:id/purge-memory", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    let memoryPurged = 0;
+    let workspaceDeleted = false;
+    let branchesReset = 0;
+    let dailyNotesDeleted = 0;
+
+    // 0. Delete daily memory notes (YYYY-MM-DD.md) from the agent's home directory
+    const instructionsFilePath = (agent.adapterConfig as Record<string, unknown>)?.instructionsFilePath;
+    if (typeof instructionsFilePath === "string") {
+      const agentMemoryDir = path.join(path.dirname(instructionsFilePath), "memory");
+      try {
+        const files = await fs.readdir(agentMemoryDir);
+        const dateFileRe = /^\d{4}-\d{2}-\d{2}\.md$/;
+        for (const file of files) {
+          if (dateFileRe.test(file)) {
+            await fs.rm(path.join(agentMemoryDir, file), { force: true });
+            dailyNotesDeleted++;
+          }
+        }
+      } catch {
+        // memory dir doesn't exist — skip
+      }
+    }
+
+    // 1. Delete Claude Code auto-memory directories for this agent
+    const claudeProjectsDir = path.resolve(os.homedir(), ".claude", "projects");
+    try {
+      const entries = await fs.readdir(claudeProjectsDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (!entry.name.includes(agent.id)) continue;
+
+        const memoryDir = path.join(claudeProjectsDir, entry.name, "memory");
+        try {
+          const stat = await fs.stat(memoryDir);
+          if (stat.isDirectory()) {
+            await fs.rm(memoryDir, { recursive: true, force: true });
+            memoryPurged++;
+          }
+        } catch {
+          // memory dir doesn't exist in this project dir — skip
+        }
+      }
+    } catch {
+      // ~/.claude/projects/ doesn't exist — nothing to purge
+    }
+
+    // 2. Reset integration branches and delete them from the remote
+    const workspaceDir = path.resolve(
+      os.homedir(), ".paperclip", "instances",
+      process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default",
+      "workspaces", agent.id,
+    );
+    const companyProjects = await db
+      .select({ id: projects.id, executionWorkspacePolicy: projects.executionWorkspacePolicy })
+      .from(projects)
+      .where(and(eq(projects.companyId, agent.companyId), sql`${projects.archivedAt} IS NULL`));
+
+    for (const project of companyProjects) {
+      const policy = project.executionWorkspacePolicy as Record<string, unknown> | null;
+      const branch = policy?.branchPolicy as Record<string, unknown> | undefined;
+      const branchRef = branch?.integrationBranchRef as string | undefined;
+      if (branch?.integrationBranchEnabled && branchRef) {
+        // Try to delete the remote branch using the workspace's git credentials
+        try {
+          const isGitRepo = await fs.stat(path.join(workspaceDir, ".git")).then(() => true).catch(() => false);
+          if (isGitRepo) {
+            await runGit(["push", "origin", "--delete", branchRef], workspaceDir);
+          }
+        } catch {
+          // Best effort — workspace may not exist or branch already deleted on remote
+        }
+
+        await db
+          .update(projects)
+          .set({
+            executionWorkspacePolicy: {
+              ...policy,
+              branchPolicy: {
+                ...branch,
+                integrationBranchEnabled: false,
+                integrationBranchRef: null,
+                integrationBranchCreatedAt: null,
+                integrationBranchCreatedBy: null,
+              },
+            },
+            updatedAt: new Date(),
+          })
+          .where(eq(projects.id, project.id));
+        branchesReset++;
+      }
+    }
+
+    // 3. Delete the agent's workspace clone so it gets re-cloned fresh
+    try {
+      const stat = await fs.stat(workspaceDir);
+      if (stat.isDirectory()) {
+        await fs.rm(workspaceDir, { recursive: true, force: true });
+        workspaceDeleted = true;
+      }
+    } catch {
+      // workspace doesn't exist — skip
+    }
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "agent.memory_purged",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { memoryPurged, workspaceDeleted, branchesReset, dailyNotesDeleted },
+    });
+
+    res.json({ ok: true, memoryPurged, workspaceDeleted, branchesReset, dailyNotesDeleted });
+  });
+
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
-    const runs = await heartbeat.list(companyId, agentId, limit);
-    res.json(runs);
+    try {
+      const runs = await heartbeat.list(companyId, agentId, limit);
+      res.json(runs);
+    } catch (err: unknown) {
+      // Handle corrupted UTF-8 data in heartbeat runs — retry without resultJson instead of returning empty
+      if (err instanceof Error && err.message.includes("invalid byte sequence")) {
+        logger.warn({ err }, "heartbeat-runs query hit invalid UTF-8 data, retrying without resultJson");
+        const runs = await heartbeat.listBasic(companyId, agentId, limit);
+        res.json(runs);
+      } else {
+        throw err;
+      }
+    }
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {

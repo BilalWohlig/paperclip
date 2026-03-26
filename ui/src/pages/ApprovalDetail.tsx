@@ -26,6 +26,8 @@ export function ApprovalDetail() {
   const [commentBody, setCommentBody] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showRawPayload, setShowRawPayload] = useState(false);
+  const [showRevisionInput, setShowRevisionInput] = useState(false);
+  const [revisionNote, setRevisionNote] = useState("");
   const [additionalBudgetCents, setAdditionalBudgetCents] = useState(0);
   const [budgetInputValue, setBudgetInputValue] = useState("");
 
@@ -111,9 +113,17 @@ export function ApprovalDetail() {
   });
 
   const revisionMutation = useMutation({
-    mutationFn: () => approvalsApi.requestRevision(approvalId!),
+    mutationFn: async () => {
+      const note = revisionNote.trim();
+      if (note) {
+        await approvalsApi.addComment(approvalId!, note);
+      }
+      return approvalsApi.requestRevision(approvalId!, note || undefined);
+    },
     onSuccess: () => {
       setError(null);
+      setRevisionNote("");
+      setShowRevisionInput(false);
       refresh();
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Revision request failed"),
@@ -324,12 +334,11 @@ export function ApprovalDetail() {
               </Button>
             </>
           )}
-          {approval.status === "pending" && approval.type !== "budget_increase" && (
+          {approval.status === "pending" && approval.type !== "budget_increase" && !showRevisionInput && (
             <Button
               size="sm"
               variant="outline"
-              onClick={() => revisionMutation.mutate()}
-              disabled={revisionMutation.isPending}
+              onClick={() => setShowRevisionInput(true)}
             >
               Request revision
             </Button>
@@ -359,6 +368,36 @@ export function ApprovalDetail() {
             </Button>
           )}
         </div>
+        {showRevisionInput && (
+          <div className="border border-amber-500/30 bg-amber-500/5 rounded-md p-3 space-y-2">
+            <p className="text-sm font-medium text-amber-700 dark:text-amber-300">What changes do you want?</p>
+            <Textarea
+              value={revisionNote}
+              onChange={(e) => setRevisionNote(e.target.value)}
+              placeholder="Describe what needs to change in the plan..."
+              rows={3}
+              autoFocus
+            />
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-amber-500/40 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10"
+                onClick={() => revisionMutation.mutate()}
+                disabled={revisionMutation.isPending || !revisionNote.trim()}
+              >
+                {revisionMutation.isPending ? "Sending…" : "Send revision request"}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => { setShowRevisionInput(false); setRevisionNote(""); }}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="border border-border rounded-lg p-4 space-y-3">

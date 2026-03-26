@@ -18,7 +18,12 @@ import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { projectRouteRef, cn } from "../lib/utils";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { githubTokenApi } from "../api/secrets";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
+import { MoreHorizontal, Trash2, AlertTriangle } from "lucide-react";
 
 /* ── Top-level tab types ── */
 
@@ -203,6 +208,8 @@ export function ProjectDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const [fieldSaveStates, setFieldSaveStates] = useState<Partial<Record<ProjectConfigFieldKey, ProjectFieldSaveState>>>({});
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const fieldSaveRequestIds = useRef<Partial<Record<ProjectConfigFieldKey, number>>>({});
   const fieldSaveTimers = useRef<Partial<Record<ProjectConfigFieldKey, ReturnType<typeof setTimeout>>>>({});
   const routeProjectRef = projectId ?? "";
@@ -249,6 +256,25 @@ export function ProjectDetail() {
       if (!resolvedCompanyId) throw new Error("No company selected");
       return assetsApi.uploadImage(resolvedCompanyId, file, `projects/${projectLookupRef || "draft"}`);
     },
+  });
+
+  const deleteProject = useMutation({
+    mutationFn: () => projectsApi.remove(projectLookupRef, resolvedCompanyId ?? lookupCompanyId),
+    onSuccess: () => {
+      invalidateProject();
+      navigate("/projects");
+    },
+  });
+
+  const repoWorkspace = project?.workspaces?.find((ws) => ws.repoUrl);
+  const repoUrl = repoWorkspace?.repoUrl ?? null;
+
+  const { data: repoValidation } = useQuery({
+    queryKey: queryKeys.githubToken.validateRepo(resolvedCompanyId!, repoUrl!),
+    queryFn: () => githubTokenApi.validateRepo(resolvedCompanyId!, repoUrl!),
+    enabled: !!resolvedCompanyId && !!repoUrl,
+    staleTime: 60_000,
+    retry: false,
   });
 
   useEffect(() => {
@@ -362,7 +388,58 @@ export function ProjectDetail() {
           as="h2"
           className="text-xl font-bold"
         />
+        <div className="ml-auto shrink-0 h-7 flex items-center">
+          <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="icon-xs" className="shrink-0">
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-44 p-1" align="end">
+              <button
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                onClick={() => {
+                  setMoreOpen(false);
+                  setConfirmDelete(true);
+                }}
+              >
+                <Trash2 className="h-3 w-3" />
+                Delete Project
+              </button>
+            </PopoverContent>
+          </Popover>
+        </div>
       </div>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title="Delete Project"
+        description={`Are you sure you want to delete "${project.name}"? This action cannot be undone from the UI.`}
+        confirmLabel="Delete"
+        destructive
+        isPending={deleteProject.isPending}
+        onConfirm={() => deleteProject.mutate()}
+      />
+
+      {repoUrl && repoValidation && !repoValidation.accessible && (
+        <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm">
+          <AlertTriangle className="h-4 w-4 text-destructive shrink-0" />
+          <span className="text-destructive">
+            {repoValidation.reason === "no_token"
+              ? "No GitHub token configured — cannot access the connected repo."
+              : "GitHub token cannot access this repo. The token may have been changed or revoked."}
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="ml-auto shrink-0 text-xs"
+            onClick={() => navigate("/company/settings#github-token")}
+          >
+            Company Settings
+          </Button>
+        </div>
+      )}
 
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar

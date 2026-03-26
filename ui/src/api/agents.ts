@@ -142,6 +142,13 @@ export const agentsApi = {
     },
     companyId?: string,
   ) => api.post<HeartbeatRun | { status: "skipped" }>(agentPath(id, companyId, "/wakeup"), data),
+  scaffoldInstructions: (id: string, data: { relativePath: string; content: string }, companyId?: string) =>
+    api.post<{ agentId: string; path: string; created: boolean }>(
+      agentPath(id, companyId, "/scaffold-instructions"),
+      data,
+    ),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
+  purgeMemory: (id: string, companyId?: string) =>
+    api.post<{ ok: true; memoryPurged: number; workspaceDeleted: boolean; branchesReset: number; dailyNotesDeleted: number }>(agentPath(id, companyId, "/purge-memory"), {}),
 };

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 export interface RunProcessResult {
   exitCode: number | null;
@@ -66,7 +67,13 @@ export function parseJson(value: string): Record<string, unknown> | null {
 
 export function appendWithCap(prev: string, chunk: string, cap = MAX_CAPTURE_BYTES) {
   const combined = prev + chunk;
-  return combined.length > cap ? combined.slice(combined.length - cap) : combined;
+  if (combined.length <= cap) return combined;
+  const sliced = combined.slice(combined.length - cap);
+  // If the slice starts with an unpaired low surrogate, drop it to avoid invalid UTF-16
+  if (sliced.length > 0 && sliced.charCodeAt(0) >= 0xdc00 && sliced.charCodeAt(0) <= 0xdfff) {
+    return sliced.slice(1);
+  }
+  return sliced;
 }
 
 export function resolvePathValue(obj: Record<string, unknown>, dottedPath: string) {
@@ -331,16 +338,22 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
-        child.stdout?.on("data", (chunk: unknown) => {
-          const text = String(chunk);
+        // Use StringDecoder to safely handle multi-byte UTF-8 sequences split across chunks
+        const stdoutDecoder = new StringDecoder("utf8");
+        const stderrDecoder = new StringDecoder("utf8");
+
+        child.stdout?.on("data", (chunk: Buffer) => {
+          const text = stdoutDecoder.write(chunk);
+          if (!text) return; // partial multi-byte char buffered by decoder
           stdout = appendWithCap(stdout, text);
           logChain = logChain
             .then(() => opts.onLog("stdout", text))
             .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"));
         });
 
-        child.stderr?.on("data", (chunk: unknown) => {
-          const text = String(chunk);
+        child.stderr?.on("data", (chunk: Buffer) => {
+          const text = stderrDecoder.write(chunk);
+          if (!text) return; // partial multi-byte char buffered by decoder
           stderr = appendWithCap(stderr, text);
           logChain = logChain
             .then(() => opts.onLog("stderr", text))
@@ -362,6 +375,11 @@ export async function runChildProcess(
         child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
           if (timeout) clearTimeout(timeout);
           runningProcesses.delete(runId);
+          // Flush any remaining buffered bytes from the StringDecoders
+          const stdoutRemainder = stdoutDecoder.end();
+          const stderrRemainder = stderrDecoder.end();
+          if (stdoutRemainder) stdout = appendWithCap(stdout, stdoutRemainder);
+          if (stderrRemainder) stderr = appendWithCap(stderr, stderrRemainder);
           void logChain.finally(() => {
             resolve({
               exitCode: code,

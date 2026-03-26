@@ -61,6 +61,10 @@ export const queryKeys = {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,
   },
+  githubToken: {
+    status: (companyId: string) => ["github-token", companyId] as const,
+    validateRepo: (companyId: string, repoUrl: string) => ["github-token", companyId, "validate", repoUrl] as const,
+  },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,

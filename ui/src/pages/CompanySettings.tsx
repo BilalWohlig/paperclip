@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@/lib/router";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
+import { secretsApi } from "../api/secrets";
+import { githubTokenApi } from "../api/secrets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check } from "lucide-react";
+import { Settings, Check, Github, Trash2 } from "lucide-react";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -28,10 +32,12 @@ export function CompanySettings() {
     setSelectedCompanyId
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   // General settings local state
   const [companyName, setCompanyName] = useState("");
+  const [companySlug, setCompanySlug] = useState("");
   const [description, setDescription] = useState("");
   const [brandColor, setBrandColor] = useState("");
 
@@ -39,9 +45,12 @@ export function CompanySettings() {
   useEffect(() => {
     if (!selectedCompany) return;
     setCompanyName(selectedCompany.name);
+    setCompanySlug(selectedCompany.slug ?? "");
     setDescription(selectedCompany.description ?? "");
     setBrandColor(selectedCompany.brandColor ?? "");
   }, [selectedCompany]);
+
+  const [confirmDeleteCompany, setConfirmDeleteCompany] = useState(false);
 
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
@@ -51,12 +60,14 @@ export function CompanySettings() {
   const generalDirty =
     !!selectedCompany &&
     (companyName !== selectedCompany.name ||
+      companySlug !== (selectedCompany.slug ?? "") ||
       description !== (selectedCompany.description ?? "") ||
       brandColor !== (selectedCompany.brandColor ?? ""));
 
   const generalMutation = useMutation({
     mutationFn: (data: {
       name: string;
+      slug: string | null;
       description: string | null;
       brandColor: string | null;
     }) => companiesApi.update(selectedCompanyId!, data),
@@ -152,6 +163,8 @@ export function CompanySettings() {
       await queryClient.invalidateQueries({
         queryKey: queryKeys.companies.stats
       });
+      setConfirmDeleteCompany(false);
+      navigate("/dashboard");
     }
   });
 
@@ -173,6 +186,7 @@ export function CompanySettings() {
   function handleSaveGeneral() {
     generalMutation.mutate({
       name: companyName.trim(),
+      slug: companySlug.trim() || null,
       description: description.trim() || null,
       brandColor: brandColor || null
     });
@@ -197,6 +211,21 @@ export function CompanySettings() {
               type="text"
               value={companyName}
               onChange={(e) => setCompanyName(e.target.value)}
+            />
+          </Field>
+          <Field
+            label="Slug"
+            hint="Directory name for agent files (agents/{slug}/). Lowercase, hyphens allowed."
+          >
+            <input
+              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+              type="text"
+              value={companySlug}
+              onChange={(e) => {
+                const v = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "");
+                setCompanySlug(v);
+              }}
+              placeholder="my-company"
             />
           </Field>
           <Field
@@ -307,6 +336,9 @@ export function CompanySettings() {
         </div>
       </div>
 
+      {/* GitHub */}
+      <GitHubTokenSection companyId={selectedCompanyId!} />
+
       {/* Invites */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -386,8 +418,7 @@ export function CompanySettings() {
         </div>
         <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
           <p className="text-sm text-muted-foreground">
-            Archive this company to hide it from the sidebar. This persists in
-            the database.
+            Deleting a company hides it from the sidebar and all views.
           </p>
           <div className="flex items-center gap-2">
             <Button
@@ -397,39 +428,202 @@ export function CompanySettings() {
                 archiveMutation.isPending ||
                 selectedCompany.status === "archived"
               }
-              onClick={() => {
-                if (!selectedCompanyId) return;
-                const confirmed = window.confirm(
-                  `Archive company "${selectedCompany.name}"? It will be hidden from the sidebar.`
-                );
-                if (!confirmed) return;
-                const nextCompanyId =
-                  companies.find(
-                    (company) =>
-                      company.id !== selectedCompanyId &&
-                      company.status !== "archived"
-                  )?.id ?? null;
-                archiveMutation.mutate({
-                  companyId: selectedCompanyId,
-                  nextCompanyId
-                });
-              }}
+              onClick={() => setConfirmDeleteCompany(true)}
             >
+              <Trash2 className="h-3 w-3 mr-1" />
               {archiveMutation.isPending
-                ? "Archiving..."
+                ? "Deleting..."
                 : selectedCompany.status === "archived"
-                ? "Already archived"
-                : "Archive company"}
+                ? "Already deleted"
+                : "Delete company"}
             </Button>
             {archiveMutation.isError && (
               <span className="text-xs text-destructive">
                 {archiveMutation.error instanceof Error
                   ? archiveMutation.error.message
-                  : "Failed to archive company"}
+                  : "Failed to delete company"}
               </span>
             )}
           </div>
         </div>
+      </div>
+
+      <ConfirmDialog
+        open={confirmDeleteCompany}
+        onOpenChange={setConfirmDeleteCompany}
+        title="Delete Company"
+        description={`Are you sure you want to delete "${selectedCompany.name}"? It will be hidden from the sidebar and all views.`}
+        confirmLabel="Delete"
+        destructive
+        isPending={archiveMutation.isPending}
+        onConfirm={() => {
+          if (!selectedCompanyId) return;
+          const nextCompanyId =
+            companies.find(
+              (company) =>
+                company.id !== selectedCompanyId &&
+                company.status !== "archived"
+            )?.id ?? null;
+          archiveMutation.mutate({
+            companyId: selectedCompanyId,
+            nextCompanyId
+          });
+        }}
+      />
+    </div>
+  );
+}
+
+function GitHubTokenSection({ companyId }: { companyId: string }) {
+  const queryClient = useQueryClient();
+  const [tokenValue, setTokenValue] = useState("");
+  const [showInput, setShowInput] = useState(false);
+
+  const { data: tokenStatus, isLoading } = useQuery({
+    queryKey: queryKeys.githubToken.status(companyId),
+    queryFn: () => githubTokenApi.status(companyId),
+    enabled: !!companyId,
+  });
+
+  const createToken = useMutation({
+    mutationFn: (value: string) =>
+      secretsApi.create(companyId, {
+        name: "GITHUB_TOKEN",
+        value,
+        description: "Company-level GitHub personal access token",
+      }),
+    onSuccess: () => {
+      setTokenValue("");
+      setShowInput(false);
+      queryClient.invalidateQueries({ queryKey: queryKeys.githubToken.status(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
+    },
+  });
+
+  const deleteToken = useMutation({
+    mutationFn: () => {
+      if (!tokenStatus?.exists) throw new Error("No token");
+      return secretsApi.remove(tokenStatus.secretId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.githubToken.status(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
+    },
+  });
+
+  const rotateToken = useMutation({
+    mutationFn: (value: string) => {
+      if (!tokenStatus?.exists) throw new Error("No token");
+      return secretsApi.rotate(tokenStatus.secretId, { value });
+    },
+    onSuccess: () => {
+      setTokenValue("");
+      setShowInput(false);
+      queryClient.invalidateQueries({ queryKey: queryKeys.githubToken.status(companyId) });
+    },
+  });
+
+  const hasToken = tokenStatus?.exists === true;
+
+  return (
+    <div className="space-y-4" id="github-token">
+      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+        <Github className="h-3.5 w-3.5" />
+        GitHub
+      </div>
+      <div className="space-y-3 rounded-md border border-border px-4 py-4">
+        {isLoading ? (
+          <p className="text-xs text-muted-foreground">Loading...</p>
+        ) : hasToken ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Check className="h-4 w-4 text-green-500" />
+              <span className="text-sm font-medium">GitHub token configured</span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              A personal access token is stored as a company secret. It will be used for all projects with GitHub repos.
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowInput(!showInput)}
+              >
+                {showInput ? "Cancel" : "Rotate token"}
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={deleteToken.isPending}
+                onClick={() => {
+                  if (window.confirm("Delete the GitHub token? Projects using it will lose repo access.")) {
+                    deleteToken.mutate();
+                  }
+                }}
+              >
+                <Trash2 className="h-3 w-3 mr-1" />
+                {deleteToken.isPending ? "Deleting..." : "Delete"}
+              </Button>
+            </div>
+            {showInput && (
+              <div className="space-y-2">
+                <label className="block text-xs text-muted-foreground">New token value</label>
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                  type="password"
+                  value={tokenValue}
+                  onChange={(e) => setTokenValue(e.target.value)}
+                  placeholder="ghp_..."
+                />
+                <Button
+                  size="sm"
+                  disabled={!tokenValue.trim() || rotateToken.isPending}
+                  onClick={() => rotateToken.mutate(tokenValue.trim())}
+                >
+                  {rotateToken.isPending ? "Saving..." : "Save new token"}
+                </Button>
+              </div>
+            )}
+            {deleteToken.isError && (
+              <p className="text-xs text-destructive">
+                {deleteToken.error instanceof Error ? deleteToken.error.message : "Failed to delete"}
+              </p>
+            )}
+            {rotateToken.isError && (
+              <p className="text-xs text-destructive">
+                {rotateToken.error instanceof Error ? rotateToken.error.message : "Failed to rotate"}
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              No GitHub token configured. Add a personal access token to enable cloning private repos for your projects.
+            </p>
+            <div className="space-y-2">
+              <label className="block text-xs text-muted-foreground">GitHub personal access token</label>
+              <input
+                className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                type="password"
+                value={tokenValue}
+                onChange={(e) => setTokenValue(e.target.value)}
+                placeholder="ghp_..."
+              />
+              <Button
+                size="sm"
+                disabled={!tokenValue.trim() || createToken.isPending}
+                onClick={() => createToken.mutate(tokenValue.trim())}
+              >
+                {createToken.isPending ? "Saving..." : "Save token"}
+              </Button>
+              {createToken.isError && (
+                <p className="text-xs text-destructive">
+                  {createToken.error instanceof Error ? createToken.error.message : "Failed to save"}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -58,11 +58,40 @@ type AdapterType =
   | "http"
   | "openclaw_gateway";
 
-const DEFAULT_TASK_DESCRIPTION = `Setup yourself as the CEO. Use the ceo persona found here: [https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md](https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md)
+const CEO_AGENTS_MD_TEMPLATE = `You are the CEO.
 
-Ensure you have a folder agents/ceo and then download this AGENTS.md as well as the sibling HEARTBEAT.md, SOUL.md, and TOOLS.md. and set that AGENTS.md as the path to your agents instruction file
+Your home directory is $AGENT_HOME. Everything personal to you -- life, memory, knowledge -- lives there. Other agents may have their own folders and you may update them when necessary.
+
+Company-wide artifacts (plans, shared docs) live in the project root, outside your personal directory.
+
+## Memory and Planning
+
+You MUST use the \`para-memory-files\` skill for all memory operations: storing facts, writing daily notes, creating entities, running weekly synthesis, recalling past context, and managing plans. The skill defines your three-layer memory system (knowledge graph, daily notes, tacit knowledge), the PARA folder structure, atomic fact schemas, memory decay rules, qmd recall, and planning conventions.
+
+Invoke it whenever you need to remember, retrieve, or organize anything.
+
+## Safety Considerations
+
+- Never exfiltrate secrets or private data.
+- Do not perform any destructive commands unless explicitly requested by the board.
+
+## References
+
+These files are essential. Read them.
+
+- \`$AGENT_HOME/HEARTBEAT.md\` -- execution and extraction checklist. Run every heartbeat.
+- \`$AGENT_HOME/SOUL.md\` -- who you are and how you should act.
+- \`$AGENT_HOME/TOOLS.md\` -- tools you have access to
+`;
+
+function getDefaultTaskDescription(slug?: string) {
+  const agentDir = slug ? `agents/${slug}/ceo` : "agents/ceo";
+  return `Setup yourself as the CEO. Use the ceo persona found here: [https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md](https://github.com/paperclipai/companies/blob/main/default/ceo/AGENTS.md)
+
+Your AGENTS.md is already set up at ${agentDir}/AGENTS.md. Now download the sibling HEARTBEAT.md, SOUL.md, and TOOLS.md from the same GitHub directory into your agent home folder.
 
 And after you've finished that, hire yourself a Founding Engineer agent`;
+}
 
 export function OnboardingWizard() {
   const { onboardingOpen, onboardingOptions, closeOnboarding } = useDialog();
@@ -81,6 +110,7 @@ export function OnboardingWizard() {
 
   // Step 1
   const [companyName, setCompanyName] = useState("");
+  const [companySlug, setCompanySlug] = useState("");
   const [companyGoal, setCompanyGoal] = useState("");
 
   // Step 2
@@ -102,7 +132,7 @@ export function OnboardingWizard() {
   // Step 3
   const [taskTitle, setTaskTitle] = useState("Create your CEO HEARTBEAT.md");
   const [taskDescription, setTaskDescription] = useState(
-    DEFAULT_TASK_DESCRIPTION
+    getDefaultTaskDescription()
   );
 
   // Auto-grow textarea for task description
@@ -233,6 +263,7 @@ export function OnboardingWizard() {
     setLoading(false);
     setError(null);
     setCompanyName("");
+    setCompanySlug("");
     setCompanyGoal("");
     setAgentName("CEO");
     setAdapterType("claude_local");
@@ -247,7 +278,7 @@ export function OnboardingWizard() {
     setForceUnsetAnthropicApiKey(false);
     setUnsetAnthropicLoading(false);
     setTaskTitle("Create your CEO HEARTBEAT.md");
-    setTaskDescription(DEFAULT_TASK_DESCRIPTION);
+    setTaskDescription(getDefaultTaskDescription());
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedAgentId(null);
@@ -328,11 +359,18 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
-      const company = await companiesApi.create({ name: companyName.trim() });
+      const company = await companiesApi.create({
+        name: companyName.trim(),
+        ...(companySlug.trim() ? { slug: companySlug.trim() } : {}),
+      });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+
+      // Update the default task description with the company slug
+      const slug = company.slug || companySlug.trim() || undefined;
+      setTaskDescription(getDefaultTaskDescription(slug));
 
       if (companyGoal.trim()) {
         await goalsApi.create(company.id, {
@@ -407,6 +445,18 @@ export function OnboardingWizard() {
           }
         }
       });
+
+      // Scaffold AGENTS.md on disk and set instructionsFilePath
+      if (companySlug.trim()) {
+        const agentSlug = agentName.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+        const relativePath = `agents/${companySlug.trim()}/${agentSlug}/AGENTS.md`;
+        try {
+          await agentsApi.scaffoldInstructions(agent.id, { relativePath, content: CEO_AGENTS_MD_TEMPLATE });
+        } catch {
+          // Non-fatal: agent can still work, just without pre-created instructions
+        }
+      }
+
       setCreatedAgentId(agent.id);
       queryClient.invalidateQueries({
         queryKey: queryKeys.agents.list(createdCompanyId)
@@ -593,6 +643,23 @@ export function OnboardingWizard() {
                       onChange={(e) => setCompanyName(e.target.value)}
                       autoFocus
                     />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">
+                      Company slug
+                    </label>
+                    <input
+                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                      placeholder="my-company"
+                      value={companySlug}
+                      onChange={(e) => {
+                        const v = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "");
+                        setCompanySlug(v);
+                      }}
+                    />
+                    <p className="text-[10px] text-muted-foreground mt-1">
+                      Agent files directory name (agents/{companySlug || "slug"}/). Lowercase, hyphens allowed.
+                    </p>
                   </div>
                   <div>
                     <label className="text-xs text-muted-foreground mb-1 block">

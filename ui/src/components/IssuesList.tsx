@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { Link } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { issuesApi } from "../api/issues";
@@ -12,13 +12,14 @@ import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { EmptyState } from "./EmptyState";
 import { Identity } from "./Identity";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { PageSkeleton } from "./PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search } from "lucide-react";
+import { CircleDot, Plus, Filter, ArrowUpDown, Layers, Check, X, ChevronRight, List, Columns3, User, Search, Trash2 } from "lucide-react";
 import { KanbanBoard } from "./KanbanBoard";
 import type { Issue } from "@paperclipai/shared";
 
@@ -165,6 +166,19 @@ export function IssuesList({
 }: IssuesListProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialog();
+  const queryClient = useQueryClient();
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
+
+  const deleteAllIssues = useMutation({
+    mutationFn: () => issuesApi.removeAll(selectedCompanyId!),
+    onSuccess: () => {
+      setConfirmDeleteAll(false);
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
+    },
+  });
 
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
@@ -287,6 +301,12 @@ export function IssuesList({
             <Plus className="h-4 w-4 sm:mr-1" />
             <span className="hidden sm:inline">New Issue</span>
           </Button>
+          {issues.length > 0 && (
+            <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => setConfirmDeleteAll(true)}>
+              <Trash2 className="h-4 w-4 sm:mr-1" />
+              <span className="hidden sm:inline">Delete All</span>
+            </Button>
+          )}
           <div className="relative w-48 sm:w-64 md:w-80">
             <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -751,6 +771,16 @@ export function IssuesList({
           </Collapsible>
         ))
       )}
+      <ConfirmDialog
+        open={confirmDeleteAll}
+        onOpenChange={setConfirmDeleteAll}
+        title="Delete All Issues"
+        description={`Are you sure you want to delete all ${issues.length} issue${issues.length === 1 ? "" : "s"}? This action cannot be undone from the UI.`}
+        confirmLabel="Delete All"
+        destructive
+        isPending={deleteAllIssues.isPending}
+        onConfirm={() => deleteAllIssues.mutate()}
+      />
     </div>
   );
 }

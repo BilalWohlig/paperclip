@@ -1,6 +1,6 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import { companies, heartbeatRuns, issues, projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
@@ -23,10 +23,23 @@ type CreateWorkspaceInput = {
   cwd?: string | null;
   repoUrl?: string | null;
   repoRef?: string | null;
+  env?: Record<string, unknown> | null;
   metadata?: Record<string, unknown> | null;
   isPrimary?: boolean;
 };
 type UpdateWorkspaceInput = Partial<CreateWorkspaceInput>;
+
+const PROJECT_PREFIX_FALLBACK = "PRJ";
+
+function deriveProjectIssuePrefixBase(name: string) {
+  const normalized = name.toUpperCase().replace(/[^A-Z]/g, "");
+  return normalized.slice(0, 3) || PROJECT_PREFIX_FALLBACK;
+}
+
+function projectPrefixSuffix(attempt: number) {
+  if (attempt <= 1) return "";
+  return "A".repeat(attempt - 1);
+}
 
 interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> {
   urlKey: string;
@@ -128,6 +141,7 @@ function toWorkspace(
     cwd: row.cwd,
     repoUrl: row.repoUrl ?? null,
     repoRef: row.repoRef ?? null,
+    env: (row.env as Record<string, unknown> | null) ?? null,
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
     isPrimary: row.isPrimary,
     runtimeServices,
@@ -324,7 +338,7 @@ async function ensureSinglePrimaryWorkspace(
 export function projectService(db: Db) {
   return {
     list: async (companyId: string): Promise<ProjectWithGoals[]> => {
-      const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
+      const rows = await db.select().from(projects).where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt)));
       const withGoals = await attachGoals(db, rows);
       return attachWorkspaces(db, withGoals);
     },
@@ -335,7 +349,7 @@ export function projectService(db: Db) {
       const rows = await db
         .select()
         .from(projects)
-        .where(and(eq(projects.companyId, companyId), inArray(projects.id, dedupedIds)));
+        .where(and(eq(projects.companyId, companyId), inArray(projects.id, dedupedIds), isNull(projects.archivedAt)));
       const withGoals = await attachGoals(db, rows);
       const withWorkspaces = await attachWorkspaces(db, withGoals);
       const byId = new Map(withWorkspaces.map((project) => [project.id, project]));
@@ -346,7 +360,7 @@ export function projectService(db: Db) {
       const row = await db
         .select()
         .from(projects)
-        .where(eq(projects.id, id))
+        .where(and(eq(projects.id, id), isNull(projects.archivedAt)))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
       const [withGoals] = await attachGoals(db, [row]);
@@ -373,17 +387,48 @@ export function projectService(db: Db) {
       const existingProjects = await db
         .select({ id: projects.id, name: projects.name })
         .from(projects)
-        .where(eq(projects.companyId, companyId));
+        .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt)));
       projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
 
       // Also write goalId to the legacy column (first goal or null)
       const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
 
-      const row = await db
-        .insert(projects)
-        .values({ ...projectData, goalId: legacyGoalId, companyId })
-        .returning()
-        .then((rows) => rows[0]);
+      // Derive a unique issue prefix for this project
+      const prefixBase = deriveProjectIssuePrefixBase(projectData.name);
+
+      // Collect prefixes already in use by companies so we don't collide cross-table
+      const companyPrefixes = await db
+        .select({ issuePrefix: companies.issuePrefix })
+        .from(companies)
+        .then((rows) => new Set(rows.map((r) => r.issuePrefix)));
+
+      let row: ProjectRow | undefined;
+      let suffixAttempt = 1;
+      while (suffixAttempt < 10000) {
+        const candidate = `${prefixBase}${projectPrefixSuffix(suffixAttempt)}`;
+        if (companyPrefixes.has(candidate)) {
+          suffixAttempt++;
+          continue;
+        }
+        try {
+          row = await db
+            .insert(projects)
+            .values({ ...projectData, goalId: legacyGoalId, companyId, issuePrefix: candidate })
+            .returning()
+            .then((rows) => rows[0]);
+          break;
+        } catch (error) {
+          // Check if it's a unique constraint violation on the project prefix index
+          const isConflict =
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            (error as { code?: string }).code === "23505";
+          if (!isConflict) throw error;
+          suffixAttempt++;
+        }
+      }
+      if (!row) throw new Error("Unable to allocate unique project issue prefix");
 
       if (ids && ids.length > 0) {
         await syncGoalLinks(db, row.id, companyId, ids);
@@ -414,7 +459,7 @@ export function projectService(db: Db) {
           const existingProjects = await db
             .select({ id: projects.id, name: projects.name })
             .from(projects)
-            .where(eq(projects.companyId, existingProject.companyId));
+            .where(and(eq(projects.companyId, existingProject.companyId), isNull(projects.archivedAt)));
           projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects, {
             excludeProjectId: id,
           });
@@ -447,16 +492,62 @@ export function projectService(db: Db) {
       return enriched ?? null;
     },
 
-    remove: (id: string) =>
-      db
-        .delete(projects)
-        .where(eq(projects.id, id))
+    remove: async (id: string) => {
+      const now = new Date();
+      const row = await db
+        .update(projects)
+        .set({ archivedAt: now, updatedAt: now })
+        .where(and(eq(projects.id, id), isNull(projects.archivedAt)))
         .returning()
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          if (!row) return null;
-          return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        }),
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+
+      // Cascade: soft-delete all project issues, unassign agents, clear execution locks
+      const hiddenIssues = await db
+        .update(issues)
+        .set({
+          hiddenAt: now,
+          updatedAt: now,
+          assigneeAgentId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+        })
+        .where(and(eq(issues.projectId, id), isNull(issues.hiddenAt)))
+        .returning({ id: issues.id });
+
+      // Cancel any queued/running heartbeat runs for those issues
+      if (hiddenIssues.length > 0) {
+        const issueIds = hiddenIssues.map((i) => i.id);
+        const activeRuns = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, row.companyId),
+              inArray(heartbeatRuns.status, ["queued", "running"]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' IN (${sql.join(
+                issueIds.map((rid) => sql`${rid}`),
+                sql`, `,
+              )})`,
+            ),
+          );
+        for (const run of activeRuns) {
+          await db
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              error: "Project archived",
+              errorCode: "project_archived",
+              finishedAt: now,
+              updatedAt: now,
+            })
+            .where(and(eq(heartbeatRuns.id, run.id), inArray(heartbeatRuns.status, ["queued", "running"])));
+        }
+      }
+
+      return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
+    },
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db
@@ -528,6 +619,7 @@ export function projectService(db: Db) {
             cwd: cwd ?? null,
             repoUrl: repoUrl ?? null,
             repoRef: readNonEmptyString(data.repoRef),
+            env: (data.env as Record<string, unknown> | null | undefined) ?? null,
             metadata: (data.metadata as Record<string, unknown> | null | undefined) ?? null,
             isPrimary: shouldBePrimary,
           })
@@ -576,6 +668,7 @@ export function projectService(db: Db) {
       if (data.cwd !== undefined) patch.cwd = nextCwd ?? null;
       if (data.repoUrl !== undefined) patch.repoUrl = nextRepoUrl ?? null;
       if (data.repoRef !== undefined) patch.repoRef = readNonEmptyString(data.repoRef);
+      if (data.env !== undefined) patch.env = data.env;
       if (data.metadata !== undefined) patch.metadata = data.metadata;
 
       const updated = await db.transaction(async (tx) => {
@@ -719,7 +812,7 @@ export function projectService(db: Db) {
         const row = await db
           .select({ id: projects.id, companyId: projects.companyId, name: projects.name })
           .from(projects)
-          .where(and(eq(projects.id, raw), eq(projects.companyId, companyId)))
+          .where(and(eq(projects.id, raw), eq(projects.companyId, companyId), isNull(projects.archivedAt)))
           .then((rows) => rows[0] ?? null);
         if (!row) return { project: null, ambiguous: false } as const;
         return {
@@ -736,7 +829,7 @@ export function projectService(db: Db) {
       const rows = await db
         .select({ id: projects.id, companyId: projects.companyId, name: projects.name })
         .from(projects)
-        .where(eq(projects.companyId, companyId));
+        .where(and(eq(projects.companyId, companyId), isNull(projects.archivedAt)));
       const matches = rows.filter((row) => deriveProjectUrlKey(row.name, row.id) === urlKey);
       if (matches.length === 1) {
         const match = matches[0]!;

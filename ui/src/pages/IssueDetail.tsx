@@ -46,6 +46,7 @@ import {
 } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
 import type { Agent, IssueAttachment } from "@paperclipai/shared";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 
 type CommentReassignment = {
   assigneeAgentId: string | null;
@@ -160,6 +161,7 @@ export function IssueDetail() {
     cost: false,
   });
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
 
@@ -471,6 +473,18 @@ export function IssueDetail() {
     },
   });
 
+  const deleteIssue = useMutation({
+    mutationFn: () => issuesApi.remove(issueId!),
+    onSuccess: () => {
+      invalidateIssue();
+      if (issue?.projectId) {
+        navigate(`/projects/${issue.projectId}/issues`);
+      } else {
+        navigate("/issues/all");
+      }
+    },
+  });
+
   useEffect(() => {
     const titleLabel = issue?.title ?? issueId ?? "Issue";
     setBreadcrumbs([
@@ -642,15 +656,12 @@ export function IssueDetail() {
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
                 onClick={() => {
-                  updateIssue.mutate(
-                    { hiddenAt: new Date().toISOString() },
-                    { onSuccess: () => navigate("/issues/all") },
-                  );
                   setMoreOpen(false);
+                  setConfirmDelete(true);
                 }}
               >
-                <EyeOff className="h-3 w-3" />
-                Hide this Issue
+                <Trash2 className="h-3 w-3" />
+                Delete Issue
               </button>
             </PopoverContent>
             </Popover>
@@ -935,6 +946,16 @@ export function IssueDetail() {
           </ScrollArea>
         </SheetContent>
       </Sheet>
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title="Delete Issue"
+        description={`Are you sure you want to delete "${issue.title}"? This action cannot be undone from the UI.`}
+        confirmLabel="Delete"
+        destructive
+        isPending={deleteIssue.isPending}
+        onConfirm={() => deleteIssue.mutate()}
+      />
       <ScrollToBottom />
     </div>
   );

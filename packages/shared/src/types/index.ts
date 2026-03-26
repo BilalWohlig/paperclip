@@ -16,6 +16,7 @@ export type {
   ExecutionWorkspaceStrategyType,
   ExecutionWorkspaceMode,
   ExecutionWorkspaceStrategy,
+  BranchPolicy,
   ProjectExecutionWorkspacePolicy,
   IssueExecutionWorkspaceSettings,
 } from "./workspace-runtime.js";

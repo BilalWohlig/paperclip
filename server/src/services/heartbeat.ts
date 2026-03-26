@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -27,10 +27,13 @@ import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   buildWorkspaceReadyComment,
+  ensureIntegrationBranch,
   ensureRuntimeServicesForRun,
   persistAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
+  renderIntegrationBranchName,
+  runGit,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import {
@@ -53,22 +56,10 @@ const summarizedHeartbeatRunResultJson = sql<Record<string, unknown> | null>`
     ELSE NULLIF(
       jsonb_strip_nulls(
         jsonb_build_object(
-          'summary', CASE
-            WHEN ${heartbeatRuns.resultJson} ->> 'summary' IS NULL THEN NULL
-            ELSE left(${heartbeatRuns.resultJson} ->> 'summary', 500)
-          END,
-          'result', CASE
-            WHEN ${heartbeatRuns.resultJson} ->> 'result' IS NULL THEN NULL
-            ELSE left(${heartbeatRuns.resultJson} ->> 'result', 500)
-          END,
-          'message', CASE
-            WHEN ${heartbeatRuns.resultJson} ->> 'message' IS NULL THEN NULL
-            ELSE left(${heartbeatRuns.resultJson} ->> 'message', 500)
-          END,
-          'error', CASE
-            WHEN ${heartbeatRuns.resultJson} ->> 'error' IS NULL THEN NULL
-            ELSE left(${heartbeatRuns.resultJson} ->> 'error', 500)
-          END,
+          'summary', ${heartbeatRuns.resultJson} -> 'summary',
+          'result', ${heartbeatRuns.resultJson} -> 'result',
+          'message', ${heartbeatRuns.resultJson} -> 'message',
+          'error', ${heartbeatRuns.resultJson} -> 'error',
           'total_cost_usd', ${heartbeatRuns.resultJson} -> 'total_cost_usd',
           'cost_usd', ${heartbeatRuns.resultJson} -> 'cost_usd',
           'costUsd', ${heartbeatRuns.resultJson} -> 'costUsd'
@@ -108,6 +99,12 @@ const heartbeatRunListColumns = {
   contextSnapshot: heartbeatRuns.contextSnapshot,
   createdAt: heartbeatRuns.createdAt,
   updatedAt: heartbeatRuns.updatedAt,
+} as const;
+
+/** Same columns but with resultJson hardcoded to NULL — used as fallback when UTF-8 data is corrupt */
+const heartbeatRunListColumnsBasic = {
+  ...heartbeatRunListColumns,
+  resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
 } as const;
 
 function appendExcerpt(prev: string, chunk: string) {
@@ -160,6 +157,7 @@ export type ResolvedWorkspaceForRun = {
   workspaceId: string | null;
   repoUrl: string | null;
   repoRef: string | null;
+  workspaceEnv: Record<string, unknown> | null;
   workspaceHints: Array<{
     workspaceId: string;
     cwd: string | null;
@@ -557,6 +555,96 @@ export function heartbeatService(db: Db) {
     return runtimeForRun?.sessionId ?? null;
   }
 
+  async function ensureRepoCloned(
+    fallbackCwd: string,
+    repoUrl: string,
+    repoRef: string | null,
+    authToken?: string | null,
+  ): Promise<{ cloned: boolean; warnings: string[] }> {
+    const warnings: string[] = [];
+
+    // Build authenticated URL if token provided (for private repos)
+    let cloneUrl = repoUrl;
+    if (authToken) {
+      try {
+        const parsed = new URL(repoUrl);
+        parsed.username = "x-access-token";
+        parsed.password = authToken;
+        cloneUrl = parsed.toString();
+      } catch { /* use original URL */ }
+    }
+
+    // Already a git repo? Just fetch to update.
+    const isGitRepo = await runGit(["rev-parse", "--show-toplevel"], fallbackCwd)
+      .then(() => true)
+      .catch(() => false);
+
+    if (isGitRepo) {
+      try {
+        if (authToken) {
+          await runGit(["remote", "set-url", "origin", cloneUrl], fallbackCwd);
+        }
+        await runGit(["fetch", "--prune", "origin"], fallbackCwd);
+        if (repoRef) {
+          const isBranch = await runGit(
+            ["rev-parse", "--verify", `refs/remotes/origin/${repoRef}`],
+            fallbackCwd,
+          ).then(() => true).catch(() => false);
+          if (isBranch) {
+            await runGit(["checkout", repoRef], fallbackCwd);
+            await runGit(["pull", "--ff-only"], fallbackCwd).catch(() => {
+              warnings.push(`git pull --ff-only failed for ref "${repoRef}".`);
+            });
+          }
+        }
+      } catch (err) {
+        warnings.push(
+          `git fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return { cloned: false, warnings };
+    }
+
+    // Not a git repo — check directory is empty before cloning
+    const entries = await fs.readdir(fallbackCwd);
+    if (entries.length > 0) {
+      warnings.push(
+        `Fallback workspace "${fallbackCwd}" is not empty and not a git repo. Cannot auto-clone "${repoUrl}".`,
+      );
+      return { cloned: false, warnings };
+    }
+
+    // Clone into a temp sibling dir, then replace the empty fallback dir
+    const tempDir = `${fallbackCwd}.__clone_tmp_${Date.now()}`;
+    try {
+      const cloneArgs = ["clone", cloneUrl, tempDir];
+      if (repoRef) {
+        cloneArgs.splice(1, 0, "--branch", repoRef);
+      }
+      await runGit(cloneArgs, path.dirname(fallbackCwd));
+      await fs.rm(fallbackCwd, { recursive: true, force: true });
+      await fs.rename(tempDir, fallbackCwd);
+
+      // Configure credential helper for push operations if token provided
+      if (authToken) {
+        await runGit([
+          "config", "credential.helper",
+          `!f() { echo "username=x-access-token"; echo "password=${authToken}"; }; f`,
+        ], fallbackCwd).catch(() => {
+          warnings.push("Failed to configure git credential helper for push.");
+        });
+      }
+
+      return { cloned: true, warnings };
+    } catch (err) {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      warnings.push(
+        `Auto-clone of "${repoUrl}" failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { cloned: false, warnings };
+    }
+  }
+
   async function resolveWorkspaceForRun(
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
@@ -617,6 +705,7 @@ export function heartbeatService(db: Db) {
             workspaceId: workspace.id,
             repoUrl: workspace.repoUrl,
             repoRef: workspace.repoRef,
+            workspaceEnv: (workspace.env as Record<string, unknown> | null) ?? null,
             workspaceHints,
             warnings: [],
           };
@@ -647,6 +736,7 @@ export function heartbeatService(db: Db) {
         workspaceId: projectWorkspaceRows[0]?.id ?? null,
         repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
         repoRef: projectWorkspaceRows[0]?.repoRef ?? null,
+        workspaceEnv: (projectWorkspaceRows[0]?.env as Record<string, unknown> | null) ?? null,
         workspaceHints,
         warnings,
       };
@@ -666,6 +756,7 @@ export function heartbeatService(db: Db) {
           workspaceId: readNonEmptyString(previousSessionParams?.workspaceId),
           repoUrl: readNonEmptyString(previousSessionParams?.repoUrl),
           repoRef: readNonEmptyString(previousSessionParams?.repoRef),
+          workspaceEnv: null,
           workspaceHints,
           warnings: [],
         };
@@ -695,6 +786,7 @@ export function heartbeatService(db: Db) {
       workspaceId: null,
       repoUrl: null,
       repoRef: null,
+      workspaceEnv: null,
       workspaceHints,
       warnings,
     };
@@ -974,6 +1066,50 @@ export function heartbeatService(db: Db) {
     }
   }
 
+  const ERROR_AUTO_RECOVERY_MS = 60 * 1000; // 1 minute
+
+  async function autoRecoverErrorAgents() {
+    const now = new Date();
+    const errorAgents = await db
+      .select({ id: agents.id, companyId: agents.companyId, updatedAt: agents.updatedAt })
+      .from(agents)
+      .where(eq(agents.status, "error"));
+
+    let recovered = 0;
+    for (const agent of errorAgents) {
+      const errorSince = agent.updatedAt ? new Date(agent.updatedAt).getTime() : 0;
+      if (now.getTime() - errorSince < ERROR_AUTO_RECOVERY_MS) continue;
+
+      const updated = await db
+        .update(agents)
+        .set({ status: "idle", updatedAt: now })
+        .where(and(eq(agents.id, agent.id), eq(agents.status, "error")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (updated) {
+        recovered += 1;
+        publishLiveEvent({
+          companyId: updated.companyId,
+          type: "agent.status",
+          payload: {
+            agentId: updated.id,
+            status: "idle",
+            lastHeartbeatAt: updated.lastHeartbeatAt
+              ? new Date(updated.lastHeartbeatAt).toISOString()
+              : null,
+            outcome: "auto_recovered",
+          },
+        });
+      }
+    }
+
+    if (recovered > 0) {
+      logger.info({ recovered }, "auto-recovered agents from error to idle");
+    }
+    return { recovered };
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -986,13 +1122,21 @@ export function heartbeatService(db: Db) {
 
     const reaped: string[] = [];
 
+    // Queued runs legitimately have no process — they're waiting for an available
+    // slot.  Only reap them if they've been stuck for a very long time (1 hour).
+    const QUEUED_STALE_THRESHOLD_MS = 60 * 60 * 1000;
+
     for (const run of activeRuns) {
       if (runningProcesses.has(run.id)) continue;
 
       // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0) {
+      const effectiveThreshold =
+        run.status === "queued"
+          ? Math.max(staleThresholdMs, QUEUED_STALE_THRESHOLD_MS)
+          : staleThresholdMs;
+      if (effectiveThreshold > 0) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
-        if (now.getTime() - refTime < staleThresholdMs) continue;
+        if (now.getTime() - refTime < effectiveThreshold) continue;
       }
 
       await setRunStatus(run.id, "failed", {
@@ -1157,9 +1301,10 @@ export function heartbeatService(db: Db) {
             assigneeAgentId: issues.assigneeAgentId,
             assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
             executionWorkspaceSettings: issues.executionWorkspaceSettings,
+            hiddenAt: issues.hiddenAt,
           })
           .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId), isNull(issues.hiddenAt)))
           .then((rows) => rows[0] ?? null)
       : null;
     const issueAssigneeOverrides =
@@ -1208,6 +1353,73 @@ export function heartbeatService(db: Db) {
       mode: executionWorkspaceMode,
       legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
     });
+
+    // --- Integration branch: create on first run, override baseRef for worktrees ---
+    if (
+      projectExecutionWorkspacePolicy?.branchPolicy?.integrationBranchEnabled &&
+      resolvedWorkspace.source === "project_primary" &&
+      executionProjectId
+    ) {
+      const branchPolicy = projectExecutionWorkspacePolicy.branchPolicy;
+      let integrationRef = branchPolicy.integrationBranchRef ?? null;
+
+      if (!integrationRef) {
+        // First run — create the integration branch
+        const template = branchPolicy.integrationBranchTemplate ?? "{{workspace.repoRef}}-integration";
+        const branchName = renderIntegrationBranchName(template, {
+          repoRef: resolvedWorkspace.repoRef,
+          projectId: executionProjectId,
+        });
+        try {
+          const repoRoot = await runGit(["rev-parse", "--show-toplevel"], resolvedWorkspace.cwd);
+          const baseRef = resolvedWorkspace.repoRef ?? "HEAD";
+          const result = await ensureIntegrationBranch({
+            repoRoot,
+            repoRef: baseRef,
+            integrationBranchName: branchName,
+          });
+          integrationRef = result.branchName;
+
+          // Persist resolved ref back to the project
+          const updatedPolicy = {
+            ...(projectExecutionWorkspacePolicy as unknown as Record<string, unknown>),
+            branchPolicy: {
+              ...branchPolicy,
+              integrationBranchRef: result.branchName,
+              integrationBranchCreatedAt: new Date().toISOString(),
+              integrationBranchCreatedBy: agent.id,
+            },
+          };
+          await db
+            .update(projects)
+            .set({ executionWorkspacePolicy: updatedPolicy, updatedAt: new Date() })
+            .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)));
+          logger.info(
+            { agentId: agent.id, projectId: executionProjectId, branch: result.branchName, created: result.created },
+            "Integration branch ensured",
+          );
+        } catch (err) {
+          logger.warn(
+            { err, agentId: agent.id, projectId: executionProjectId },
+            "Failed to create integration branch, falling back to repoRef",
+          );
+        }
+      }
+
+      // Override baseRef in workspace strategy so worktrees branch from integration branch
+      if (integrationRef) {
+        const currentStrategy = parseObject(workspaceManagedConfig.workspaceStrategy);
+        const strategyType = String(currentStrategy.type || "");
+        if (strategyType === "git_worktree" || executionWorkspaceMode === "isolated") {
+          workspaceManagedConfig.workspaceStrategy = {
+            ...currentStrategy,
+            type: "git_worktree",
+            baseRef: integrationRef,
+          };
+        }
+      }
+    }
+
     const mergedConfig = issueAssigneeOverrides?.adapterConfig
       ? { ...workspaceManagedConfig, ...issueAssigneeOverrides.adapterConfig }
       : workspaceManagedConfig;
@@ -1215,6 +1427,54 @@ export function heartbeatService(db: Db) {
       agent.companyId,
       mergedConfig,
     );
+
+    // Resolve workspace-level env vars (e.g. GITHUB_TOKEN) and merge into adapter config
+    const autoCloneWarnings: string[] = [];
+    if (resolvedWorkspace.workspaceEnv) {
+      const { env: wsEnv, secretKeys: wsSecretKeys } =
+        await secretsSvc.resolveEnvBindings(agent.companyId, resolvedWorkspace.workspaceEnv);
+      for (const key of wsSecretKeys) secretKeys.add(key);
+      // Workspace env is lower priority than agent adapter config env
+      const existingEnv = parseObject(resolvedConfig.env);
+      resolvedConfig.env = { ...wsEnv, ...existingEnv };
+    }
+
+    // Auto-clone repo for repo-only workspaces
+    if (resolvedWorkspace.repoUrl && resolvedWorkspace.source === "project_primary") {
+      const resolvedAdapterEnv = parseObject(resolvedConfig.env);
+      let githubToken =
+        (typeof resolvedAdapterEnv.GITHUB_TOKEN === "string" ? resolvedAdapterEnv.GITHUB_TOKEN : null) ||
+        (typeof resolvedAdapterEnv.GH_TOKEN === "string" ? resolvedAdapterEnv.GH_TOKEN : null);
+
+      // Fall back to company-level GITHUB_TOKEN secret
+      if (!githubToken) {
+        try {
+          const companyGhSecret = await secretsSvc.getByName(agent.companyId, "GITHUB_TOKEN");
+          if (companyGhSecret) {
+            const { env: ghEnv } = await secretsSvc.resolveEnvBindings(agent.companyId, {
+              GITHUB_TOKEN: { type: "secret_ref", secretId: companyGhSecret.id, version: "latest" },
+            });
+            githubToken = ghEnv.GITHUB_TOKEN || null;
+          }
+        } catch {
+          // silently continue without company-level token
+        }
+      }
+
+      const cloneResult = await ensureRepoCloned(
+        resolvedWorkspace.cwd,
+        resolvedWorkspace.repoUrl,
+        resolvedWorkspace.repoRef,
+        githubToken,
+      );
+      autoCloneWarnings.push(...cloneResult.warnings);
+      if (cloneResult.cloned) {
+        autoCloneWarnings.push(
+          `Auto-cloned repo "${resolvedWorkspace.repoUrl}" into workspace "${resolvedWorkspace.cwd}".`,
+        );
+      }
+    }
+
     const issueRef = issueId
       ? await db
           .select({
@@ -1254,6 +1514,7 @@ export function heartbeatService(db: Db) {
     const runtimeSessionParams = runtimeSessionResolution.sessionParams;
     const runtimeWorkspaceWarnings = [
       ...resolvedWorkspace.warnings,
+      ...autoCloneWarnings,
       ...executionWorkspace.warnings,
       ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),
       ...(resetTaskSession && sessionResetReason
@@ -1949,7 +2210,7 @@ export function heartbeatService(db: Db) {
             executionAgentNameKey: issues.executionAgentNameKey,
           })
           .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId), isNull(issues.hiddenAt)))
           .then((rows) => rows[0] ?? null);
 
         if (!issue) {
@@ -2345,6 +2606,24 @@ export function heartbeatService(db: Db) {
       return query;
     },
 
+    /** Fallback list that skips the summarized resultJson (avoids UTF-8 errors in corrupt rows) */
+    listBasic: async (companyId: string, agentId?: string, limit?: number) => {
+      const query = db
+        .select(heartbeatRunListColumnsBasic)
+        .from(heartbeatRuns)
+        .where(
+          agentId
+            ? and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId))
+            : eq(heartbeatRuns.companyId, companyId),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt));
+
+      if (limit) {
+        return query.limit(limit);
+      }
+      return query;
+    },
+
     getRun,
 
     getRuntimeState: async (agentId: string) => {
@@ -2459,6 +2738,8 @@ export function heartbeatService(db: Db) {
     wakeup: enqueueWakeup,
 
     reapOrphanedRuns,
+
+    autoRecoverErrorAgents,
 
     tickTimers: async (now = new Date()) => {
       const allAgents = await db.select().from(agents);

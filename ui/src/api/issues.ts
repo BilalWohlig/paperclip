@@ -37,6 +37,7 @@ export const issuesApi = {
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) => api.patch<Issue>(`/issues/${id}`, data),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
+  removeAll: (companyId: string) => api.delete<{ deleted: number }>(`/companies/${companyId}/issues`),
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {
       agentId,

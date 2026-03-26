@@ -12,6 +12,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { PageTabBar } from "../components/PageTabBar";
@@ -55,9 +56,11 @@ import {
   ChevronRight,
   ChevronDown,
   ArrowLeft,
+  Eraser,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { isUuidLike, type Agent, type HeartbeatRun, type HeartbeatRunEvent, type AgentRuntimeState, type LiveEvent } from "@paperclipai/shared";
 import { agentRouteRef } from "../lib/utils";
 
@@ -242,10 +245,12 @@ export function AgentDetail() {
   const { closePanel } = usePanel();
   const { openNewIssue } = useDialog();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
@@ -384,6 +389,27 @@ export function AgentDetail() {
     },
     onError: (err) => {
       setActionError(err instanceof Error ? err.message : "Failed to reset session");
+    },
+  });
+
+  const purgeMemory = useMutation({
+    mutationFn: () =>
+      agentsApi.purgeMemory(agentLookupRef, resolvedCompanyId ?? undefined),
+    onSuccess: (data) => {
+      setActionError(null);
+      const parts: string[] = [];
+      if (data.dailyNotesDeleted > 0) parts.push(`${data.dailyNotesDeleted} daily note${data.dailyNotesDeleted > 1 ? "s" : ""} deleted`);
+      if (data.memoryPurged > 0) parts.push(`${data.memoryPurged} memory location${data.memoryPurged > 1 ? "s" : ""} cleared`);
+      if (data.workspaceDeleted) parts.push("workspace reset");
+      if (data.branchesReset > 0) parts.push(`${data.branchesReset} integration branch${data.branchesReset > 1 ? "es" : ""} reset`);
+      pushToast({
+        title: "Agent purged",
+        body: parts.length > 0 ? parts.join(", ") : "Nothing to purge",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to purge memory");
     },
   });
 
@@ -551,6 +577,16 @@ export function AgentDetail() {
                 Reset Sessions
               </button>
               <button
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                onClick={() => {
+                  setMoreOpen(false);
+                  setPurgeConfirmOpen(true);
+                }}
+              >
+                <Eraser className="h-3 w-3" />
+                Purge Memory
+              </button>
+              <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
                 onClick={() => {
                   agentAction.mutate("terminate");
@@ -680,6 +716,28 @@ export function AgentDetail() {
           adapterType={agent.adapterType}
         />
       )}
+
+      <ConfirmDialog
+        open={purgeConfirmOpen}
+        onOpenChange={setPurgeConfirmOpen}
+        title="Purge Agent Memory"
+        description={
+          "This will permanently delete the following for this agent:\n\n" +
+          "\u2022 Daily notes \u2014 all YYYY-MM-DD.md files from the agent's memory directory\n" +
+          "\u2022 Claude Code auto-memory \u2014 persistent context from previous sessions\n" +
+          "\u2022 Workspace clone \u2014 the local git checkout (will be re-cloned on next run)\n" +
+          "\u2022 Integration branches \u2014 any active integration branches will be deleted from the remote and reset in project settings\n\n" +
+          "The agent will start completely fresh on its next heartbeat."
+        }
+        confirmLabel="Purge"
+        destructive
+        isPending={purgeMemory.isPending}
+        onConfirm={() => {
+          purgeMemory.mutate(undefined, {
+            onSettled: () => setPurgeConfirmOpen(false),
+          });
+        }}
+      />
     </div>
   );
 }
