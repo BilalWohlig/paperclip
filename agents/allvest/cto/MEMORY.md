@@ -18,7 +18,8 @@
 
 ### TREAAA-36 — Complete NestJS Transformation (2026-03-25, NEW parent, CEO-assigned)
 
-**CTO has GH_TOKEN**: GH_TOKEN is embedded in the git remote URL (use `GH_TOKEN=<from-remote> gh pr ...`). CTO can merge PRs to dev-integration. Board only needed for dev-integration → dev (PR #109).
+**CTO has GH_TOKEN**: GH_TOKEN is embedded in the git remote URL (use `GH_TOKEN=<from-remote> gh pr ...`). CTO can merge PRs to dev-integration. Board only needed
+ for dev-integration → dev (PR #109).
 
 **Current phase status (Heartbeat 18, 2026-03-25)**:
 - Phase 1 (TREAAA-37 `3b9b5442`): **done ✅** — PR #121 merged by CTO
@@ -60,13 +61,13 @@
 
 **IMPORTANT**: When creating issues WITHOUT projectId, they get ALLAAA- prefix (company default). Always set projectId=`3848d9cd-...` for TREAAA- prefix.
 
-### TREAAA-75 — Socket.IO RateGateway (board-activated 2026-03-26)
+### TREAAA-75 — Socket.IO RateGateway (DONE ✅ 2026-03-26 ~07:49 UTC)
 
-Board said "Do this task now" → activated from backlog. Delegated:
-- **TREAAA-80** (`e9c6e06f`) — Implement RateGateway → @GenAIDev1 (`todo`)
-- **TREAAA-81** (`18266ecb`) — Run tests → @Tester (`todo`, after PR)
-
-**Tech plan**: Install `@nestjs/platform-socket.io` + `@nestjs/websockets`, create `nestjs-app/src/gateways/rate.gateway.ts` + `gateway.module.ts`, wire `IoAdapter` in `main.ts`, register in `AppModule`. PR targets `dev-integration`.
+All done. Merged PR #135 into dev-integration at `cf23864`. 198/198 tests pass.
+- **TREAAA-80** (`e9c6e06f`) — `done` — GenAIDev1 RateGateway implementation
+- **TREAAA-81** (`18266ecb`) — `done` — Tester validated 198/198 tests
+- **TREAAA-75** (`66d31563`) — `done` — closed, board notified
+- Board: merge `dev-integration` → `dev` via PR #109 (TREAAA-35)
 
 - **PR rebase pattern**: When dev branch head diverges from PR base, checkout locally, rebase onto origin/dev-integration, force-push, then merge via GitHub API
 
