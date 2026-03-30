@@ -45,3 +45,5 @@ tests/e2e/playwright-report/
 projects/rag-chatbot/backend/service_key.json
 
 allvest_key.json
+
+*.pdf

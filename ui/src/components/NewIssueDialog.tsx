@@ -34,6 +34,7 @@ import {
   Tag,
   Calendar,
   Paperclip,
+  FileText,
   Loader2,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -195,6 +196,7 @@ export function NewIssueDialog() {
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
+  const docInputRef = useRef<HTMLInputElement | null>(null);
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
 
@@ -469,6 +471,21 @@ export function NewIssueDialog() {
       });
     } finally {
       if (attachInputRef.current) attachInputRef.current.value = "";
+    }
+  }
+
+  async function handleAttachDocument(evt: ChangeEvent<HTMLInputElement>) {
+    const file = evt.target.files?.[0];
+    if (!file) return;
+    try {
+      const asset = await uploadDescriptionImage.mutateAsync(file);
+      const name = file.name || "document";
+      setDescription((prev) => {
+        const suffix = `[${name}](${asset.contentPath})`;
+        return prev ? `${prev}\n\n${suffix}` : suffix;
+      });
+    } finally {
+      if (docInputRef.current) docInputRef.current.value = "";
     }
   }
 
@@ -987,6 +1004,23 @@ export function NewIssueDialog() {
           >
             <Paperclip className="h-3 w-3" />
             {uploadDescriptionImage.isPending ? "Uploading..." : "Image"}
+          </button>
+
+          {/* Attach document chip */}
+          <input
+            ref={docInputRef}
+            type="file"
+            accept=".pdf,.doc,.docx,.txt,.csv,.xls,.xlsx"
+            className="hidden"
+            onChange={handleAttachDocument}
+          />
+          <button
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
+            onClick={() => docInputRef.current?.click()}
+            disabled={uploadDescriptionImage.isPending}
+          >
+            <FileText className="h-3 w-3" />
+            Document
           </button>
 
           {/* More (dates) */}

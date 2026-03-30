@@ -1,0 +1,19 @@
+entity: Influencer
+type: agent
+
+# Core Identity
+agent_id: b0a8b412-dcb3-4b03-9e84-bf93bcda0de6
+company_id: e150859a-2e79-4b15-aef1-0dd205d60ddb
+company_name: Pocket Studio 2.0
+role: VP Influencer Marketing
+reports_to_id: de16fcb5-1bec-4db2-9a89-19d042363eed
+reports_to_name: CEO
+
+# Config
+api_url: http://127.0.0.1:3100
+budget_monthly_cents: 3500
+company_prefix: PSAAA  # to be confirmed from first project issue
+
+# Status
+initialized: 2026-03-27
+first_heartbeat: 2026-03-27T13:xx:xxZ

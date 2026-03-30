@@ -71,6 +71,50 @@ All done. Merged PR #135 into dev-integration at `cf23864`. 198/198 tests pass.
 
 - **PR rebase pattern**: When dev branch head diverges from PR base, checkout locally, rebase onto origin/dev-integration, force-push, then merge via GitHub API
 
+### TREAAA-35 — Board Merge Pending (BLOCKED)
+
+**Current state (2026-03-26 ~08:45 UTC)**:
+- dev-integration HEAD: `cf23864` (198/198 tests — includes Round 1, Round 2, Socket.IO RateGateway)
+- TREAAA-35 is `blocked`, currently **unassigned** — release endpoint cleared assignment when CTO cleared stale executionRunId `577b235a`
+- @CEO mentioned on TREAAA-35 to reassign back to CTO
+- Board notification posted with 189/189 (stale count — correction posted separately to note 198/198)
+- Pending approval: `06484409` (CEO → board: merge PR #109)
+- **No engineering work remaining. All team members idle.**
+
+### TREAAA-67 / TREAAA-79 — Final Integration Tests (historical)
+- TREAAA-67: done — 185 tests at `d9eec54` (pre-Round 2, run by Tester 2026-03-26T01:40)
+- TREAAA-79: done — 189 tests at `86a4326` (post-Round 2, run by Tester 2026-03-26T02:52)
+- Current baseline: 198 at `cf23864` (post-Socket.IO PR #135)
+
+## Bonds API Project (2026-03-27)
+
+- **Repo**: https://github.com/allvest-wm/bonds-api, base branch: `dev`
+- **Project ID**: `d5b1a04c-d2be-464c-ad58-bd220c2b30c4`
+- **Prefix**: `BON`; **Integration branch**: `dev-integration` (created 2026-03-27)
+- **Goal**: Produce SUMMARY.md documenting the codebase
+
+### Actual Architecture (verified HB62)
+- **Hybrid**: Legacy Express 4.18 (production) + NestJS 11 Phase 1 (migration in progress)
+- **NestJS adapter**: `@nestjs/platform-express` — NOT Fastify
+- **Database**: Raw `pg` (dual pools: main + user) — **NO PRISMA**
+- **Redis**: `redis@^3.0.2`; conditional `REDIS_INIT` env
+- **MongoDB**: Mongoose (legacy, disabled — commented out in `lib/db/index.js`)
+- **Auth**: Keycloak JWT RS256 JWKS via `jwks-rsa` + `passport-jwt`
+- **NestJS modules**: App, Auth, Database, Redis, Health, Fno, Ipo, Market, Screeners + Swagger
+- **Legacy Express controllers**: `controllers/v1/` — stocks, screeners, fno, ipo, market, superstar, trendlyne, healthCheck
+- **Cron**: 5 jobs in `cronJobs/` (stock/market insert/update/delete from Trendlyne API)
+- **External**: Trendlyne API; Socket.IO; Elastic APM + OpenTelemetry; Elasticsearch; Vault; GCP
+- **Config**: 65+ env vars — no .env.example; derive from `config/index.js` + `nestjs-app/src/config/configuration.ts`
+- **GH_TOKEN**: same token from trendlyne-api workspace works for bonds-api (same org)
+- **NOTE**: HB61 was WRONG (assumed Fastify + Prisma + fixed-income bonds models). CEO plan was correct.
+
+### Subtask IDs
+- **BON-2** (`3454e69c`): CTO — in_progress
+- **BON-3** (`eb9e8372-9075`): GenAIDev1 — Phase 1 → `docs/SUMMARY-part1.md` — **done ✅** PR #13 merged
+- **BON-4** (`037a3fb9-f69c`): GenAIDev2 — Phase 2 → `docs/SUMMARY-part2.md` — **done ✅** PR #14 merged
+- **BON-5** (`bcda993e-f206`): final SUMMARY.md assembly — **todo** — @GenAIDev1 notified (2026-03-27)
+- **BON-6** (`2d3162e0-fcea`): Tester validate — blocked (awaiting BON-5 PR)
+
 ## Engineers
 - **Gen AI Dev 1** (`58e75365-4791-4c33-a05e-e477a068efa7`) — reports to CTO
 - **Gen AI Dev 2** (`6b6653d6-18e2-4d1c-879a-17bfbda577d3`) — reports to CTO

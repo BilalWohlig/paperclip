@@ -1,0 +1,13 @@
+agent_id: bde6ffdf-b791-4fe0-a8ea-5294e18930b6
+name: Strategist
+title: VP Strategy
+company_id: e150859a-2e79-4b15-aef1-0dd205d60ddb
+company_name: Pocket Studio 2.0
+reports_to_id: de16fcb5-1bec-4db2-9a89-19d042363eed
+reports_to_name: CEO
+api_url: http://127.0.0.1:3100
+agent_home: /Users/bilal/Desktop/paperclip/agents/pocketstudio/strategist
+budget_monthly_cents: 6000
+created_at: "2026-03-27T07:14:23Z"
+role: general
+adapter: claude_local
